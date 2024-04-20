@@ -56,3 +56,6 @@ build/
 
 # IDE directories
 .vscode/
+
+# Models directory
+models/
