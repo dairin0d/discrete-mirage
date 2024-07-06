@@ -5,6 +5,17 @@ extern "C" {
 #include <mathc.h>
 }
 
+struct mat4 trs_matrix(struct vec3 pos, struct quat rot, struct vec3 scl) {
+    struct mat4 rotation = smat4_identity();
+    psmat4_rotation_quat(&rotation, &rot);
+    
+    struct mat4 result = smat4_identity();
+    psmat4_scale(&result, &result, &scl);
+    psmat4_multiply(&result, &rotation, &result);
+    psmat4_translate(&result, &result, &pos);
+    return result;
+}
+
 struct mat4 trs_matrix(struct vec3 pos, struct vec3 rot, struct vec3 scl) {
     struct mat4 rotation_x = smat4_identity();
     psmat4_rotation_x(&rotation_x, rot.x);
@@ -19,7 +30,6 @@ struct mat4 trs_matrix(struct vec3 pos, struct vec3 rot, struct vec3 scl) {
     psmat4_multiply(&result, &rotation_x, &result);
     psmat4_multiply(&result, &rotation_y, &result);
     psmat4_translate(&result, &result, &pos);
-    
     return result;
 }
 
@@ -42,4 +52,8 @@ struct vec3 transform_vec3(const mfloat_t *v0, const mfloat_t *m0) {
 }
 struct vec3 transform_vec3(const struct vec3 *v0, const struct mat4 *m0) {
     return transform_vec3((mfloat_t*)v0, (mfloat_t*)m0);
+}
+
+float lerp(float a, float b, float t) {
+    return a + (b - a) * t;
 }
