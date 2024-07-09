@@ -283,7 +283,7 @@ void create_scene(ProgramState* state, DMirOctree* file_octree) {
             auto object3d = new Object3D();
             object3d->octree = octree;
             object3d->root = 0;
-            object3d->effects = {.max_level = -1};
+            object3d->effects = {.max_level = -1, .dilation_abs = 0, .dilation_rel = 0};
             object3d->position = svec3(gx * grid_offset, 0, gz * grid_offset);
             object3d->rotation = squat_null();
             object3d->scale = svec3(1, 1, 1);

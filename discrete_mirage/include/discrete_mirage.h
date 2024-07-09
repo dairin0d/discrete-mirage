@@ -69,6 +69,8 @@ typedef struct DMirOctree {
 
 typedef struct DMirEffects {
     int32_t max_level;
+    float dilation_abs;
+    float dilation_rel;
 } DMirEffects;
 
 typedef struct DMirAffineInfo {

@@ -39,6 +39,11 @@
 // at most 128 times before they become subpixel
 #define MAX_STACK_DEPTH 128
 
+// We have to limit the maximum screen-space size
+// of relative dilation, because in perspective
+// it can become too big near the eye plane
+#define DILATION_REL_SIZE_MAX 64
+
 #if DMIR_INT_SIZE == 32
 typedef int32_t SInt;
 typedef uint32_t UInt;
@@ -183,11 +188,11 @@ static inline SInt is_occluded_quad(Framebuffer* framebuffer,
     MAX_UPDATE((rect).max_x, (other).max_x);\
     MAX_UPDATE((rect).max_y, (other).max_y);\
 }
-#define RECT_FROM_BOUNDS_F(rect, bounds) {\
-    (rect).min_x = (int32_t)((bounds).min_x+0.5f);\
-    (rect).max_x = (int32_t)((bounds).max_x-0.5f);\
-    (rect).min_y = (int32_t)((bounds).min_y+0.5f);\
-    (rect).max_y = (int32_t)((bounds).max_y-0.5f);\
+#define RECT_FROM_BOUNDS(rect, bounds, dilation) {\
+    (rect).min_x = (int32_t)((bounds).min_x - (dilation));\
+    (rect).max_x = (int32_t)((bounds).max_x + (dilation));\
+    (rect).min_y = (int32_t)((bounds).min_y - (dilation));\
+    (rect).max_y = (int32_t)((bounds).max_y + (dilation));\
 }
 
 static inline void project(ProjectedVertex* vertex, BatcherInternal* batcher) {
@@ -636,6 +641,9 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer,
     
     if (!isfinite(bounds.max_z - bounds.min_z)) return;
     
+    effects.dilation_abs = MAX(effects.dilation_abs, 0) - 0.5f;
+    effects.dilation_rel = CLAMP(effects.dilation_rel, 0, 1) * 0.5f;
+    
     Rect viewport = batcher->api.viewport;
     Bounds frustum_bounds = batcher->frustum_bounds;
     
@@ -643,6 +651,7 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer,
     SInt viewport_size_y = viewport.max_y - viewport.min_y + 1;
     SInt viewport_size_max = MAX(viewport_size_x, viewport_size_y);
     SInt max_subtree_size = CLAMP(batcher->api.split_factor, 0.0f, 1.0f) * viewport_size_max;
+    MAX_UPDATE(max_subtree_size, (SInt)(effects.dilation_abs * 2 + 1));
     
     uint32_t address = root;
     SInt mask = *PTR_INDEX(octree->mask, address);
@@ -686,21 +695,29 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer,
             if ((!mask) | (stack->level == effects.max_level)) continue;
         }
         
+        float dilation = effects.dilation_abs;
+        
         SInt intersects_eye_plane = (bounds.min_z <= batcher->eye_z);
         
         if (intersects_eye_plane) {
             RECT_CLIP(bounds, frustum_bounds);
+        } else if (!intersects_near_plane) {
+            float bounds_size_x = bounds.max_x - bounds.min_x;
+            float bounds_size_y = bounds.max_y - bounds.min_y;
+            float bounds_size_max = MAX(bounds_size_x, bounds_size_y);
+            float dilation_rel_size = effects.dilation_rel * bounds_size_max * (1 << stack->level);
+            dilation += MIN(dilation_rel_size, DILATION_REL_SIZE_MAX);
         }
         
         // Calculate screen-space bounds (in pixels)
         Rect rect;
-        RECT_FROM_BOUNDS_F(rect, bounds);
+        RECT_FROM_BOUNDS(rect, bounds, dilation);
         
         // Calculate node size (in pixels)
         SInt size_x = rect.max_x - rect.min_x;
         SInt size_y = rect.max_y - rect.min_y;
-        SInt max_size = MAX(size_x, size_y);
-        SInt is_pixel = (max_size == 0);
+        SInt size_max = MAX(size_x, size_y);
+        SInt is_pixel = (size_max == 0);
         SInt is_splat = (!mask) | (stack->level == effects.max_level);
         
         // Clamp to viewport
@@ -746,7 +763,7 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer,
             // we also want to take advantage of pre-sorting to reduce overdraw.
             
             SInt is_subtree = is_pixel | is_splat;
-            is_subtree |= (!intersects_near_plane) & (max_size < max_subtree_size);
+            is_subtree |= (!intersects_near_plane) & (size_max < max_subtree_size);
             
             if (is_subtree) {
                 Subtree* subtree = batcher_add_subtree(batcher);
@@ -756,6 +773,7 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer,
                 subtree->address = address;
                 subtree->effects = effects;
                 subtree->effects.max_level -= stack->level;
+                subtree->effects.dilation_rel *= (1 << stack->level);
                 
                 RECT_EXPAND(batcher->api.rect, rect);
                 continue;
@@ -910,21 +928,29 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher, Framebuff
             if ((!mask) | (stack->level == effects.max_level)) continue;
         }
         
+        float dilation = effects.dilation_abs;
+        
         SInt intersects_eye_plane = (bounds.min_z <= batcher->eye_z);
         
         if (intersects_eye_plane) {
             RECT_CLIP(bounds, frustum_bounds);
+        } else if (!intersects_near_plane) {
+            float bounds_size_x = bounds.max_x - bounds.min_x;
+            float bounds_size_y = bounds.max_y - bounds.min_y;
+            float bounds_size_max = MAX(bounds_size_x, bounds_size_y);
+            float dilation_rel_size = effects.dilation_rel * bounds_size_max * (1 << stack->level);
+            dilation += MIN(dilation_rel_size, DILATION_REL_SIZE_MAX);
         }
         
         // Calculate screen-space bounds (in pixels)
         Rect rect;
-        RECT_FROM_BOUNDS_F(rect, bounds);
+        RECT_FROM_BOUNDS(rect, bounds, dilation);
         
         // Calculate node size (in pixels)
         SInt size_x = rect.max_x - rect.min_x;
         SInt size_y = rect.max_y - rect.min_y;
-        SInt max_size = MAX(size_x, size_y);
-        SInt is_pixel = (max_size == 0);
+        SInt size_max = MAX(size_x, size_y);
+        SInt is_pixel = (size_max == 0);
         SInt is_splat = (!mask) | (stack->level == effects.max_level);
         
         // Clamp to viewport
