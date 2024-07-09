@@ -242,6 +242,9 @@ void process_continuous_events(ProgramState* state) {
     auto view_z_axis = get_matrix_vec3(&view_matrix, 2);
     float speed = 0.01f;
     if (currentKeyStates[SDL_SCANCODE_LSHIFT] | currentKeyStates[SDL_SCANCODE_RSHIFT]) {
+        speed *= 0.1f;
+    }
+    if (currentKeyStates[SDL_SCANCODE_LCTRL] | currentKeyStates[SDL_SCANCODE_RCTRL]) {
         speed *= 10;
     }
     
@@ -453,8 +456,8 @@ int main(int argc, char* argv[]) {
     };
     
     state.frustum = {
-        .min_depth = 0.01,
-        .max_depth = 1000,
+        .min_depth = 0.001f,
+        .max_depth = 1000.0f,
         .focal_extent = 1,
         .focal_depth = 1,
         .perspective = 0,
