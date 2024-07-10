@@ -31,6 +31,7 @@ extern "C" {
 
 // #define DMIR_USE_SPLAT_COLOR
 #define DMIR_USE_SPLAT_PIXEL
+#define DMIR_USE_BLIT_AT_2X2
 
 typedef uint8_t DMirBool;
 

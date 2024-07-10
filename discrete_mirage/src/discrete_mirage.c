@@ -660,7 +660,7 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher, Framebuf
     
     // Calculate the starting octant
     SInt starting_octant = calculate_starting_octant(grid);
-    starting_octant = (~starting_octant) & 7; // opposite (reverse order)
+    SInt starting_octant_reverse = (~starting_octant) & 7;
     
     SInt mask = *PTR_INDEX(octree->mask, address);
     uint32_t child_start = *PTR_INDEX(octree->addr, address);
@@ -746,6 +746,30 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher, Framebuf
             
             // Do an occlusion check
             if (is_occluded_quad(framebuffer, &rect, depth)) continue;
+            
+            #ifdef DMIR_USE_BLIT_AT_2X2
+            if (size_max <= 1) {
+                Vector3S* deltas = (stack+1)->deltas;
+                for (SInt i = 0; i < 8; i++) {
+                    SInt octant = starting_octant ^ i;
+                    if ((mask & (1 << octant)) == 0) continue;
+                    
+                    // address = *PTR_INDEX(octree->addr, child_start+octant);
+                    address = child_start + octant;
+                    
+                    SInt x = COORD_TO_PIXEL(position.x + deltas[octant].x);
+                    if ((x < stack->rect.min_x) | (x > stack->rect.max_x)) continue;
+                    
+                    SInt y = COORD_TO_PIXEL(position.y + deltas[octant].y);
+                    if ((y < stack->rect.min_y) | (y > stack->rect.max_y)) continue;
+                    
+                    Depth z = position.z + deltas[octant].z;
+                    
+                    splat_pixel(framebuffer, x, y, z, affine_id, address, octree);
+                }
+                continue;
+            }
+            #endif
         }
         
         // Push non-empty children on the stack
@@ -756,7 +780,7 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher, Framebuf
         stack->center = position;
         
         for (SInt i = 0; i < 8; i++) {
-            SInt octant = starting_octant ^ i;
+            SInt octant = starting_octant_reverse ^ i;
             if ((mask & (1 << octant)) == 0) continue;
             
             stack->octants[stack->count] = octant;
