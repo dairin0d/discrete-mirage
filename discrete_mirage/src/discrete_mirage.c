@@ -512,7 +512,7 @@ static inline void splat_pixel(Framebuffer* framebuffer, SInt x, SInt y,
 SInt calculate_max_level(Vector3F* fmatrix) {
     float gap_x = fabsf(fmatrix[0].x) + fabsf(fmatrix[1].x) + fabsf(fmatrix[2].x);
     float gap_y = fabsf(fmatrix[0].y) + fabsf(fmatrix[1].y) + fabsf(fmatrix[2].y);
-    float gap_max = MAX(gap_x, gap_y);
+    float gap_max = 2 * MAX(gap_x, gap_y);
     for (SInt max_level = 0; max_level <= ORTHO_LEVEL_LIMIT; max_level++) {
         if (gap_max < (1 << max_level)) return max_level;
     }

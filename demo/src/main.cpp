@@ -297,21 +297,21 @@ void create_scene(ProgramState* state, DMirOctree* file_octree) {
             }
             state->objects.push_back(object3d);
             
-            if ((gx == 0) & (gz == 0)) {
-                for (int octant = 0; octant < 8; octant++) {
-                    int ox = (octant >> 0) & 1;
-                    int oy = (octant >> 1) & 1;
-                    int oz = (octant >> 2) & 1;
-                    if (oy > 0) {
-                        object3d->cage[octant].x *= -0.125f;
-                        object3d->cage[octant].z *= -0.125f;
-                    } else {
-                        object3d->cage[octant].x *= 2.0f;
-                        object3d->cage[octant].z *= 2.0f;
-                    }
-                    object3d->cage[octant].y *= 1.5f;
-                }
-            }
+            // if ((gx == 0) & (gz == 0)) {
+            //     for (int octant = 0; octant < 8; octant++) {
+            //         int ox = (octant >> 0) & 1;
+            //         int oy = (octant >> 1) & 1;
+            //         int oz = (octant >> 2) & 1;
+            //         if (oy > 0) {
+            //             object3d->cage[octant].x *= -0.125f;
+            //             object3d->cage[octant].z *= -0.125f;
+            //         } else {
+            //             object3d->cage[octant].x *= 2.0f;
+            //             object3d->cage[octant].z *= 2.0f;
+            //         }
+            //         object3d->cage[octant].y *= 1.5f;
+            //     }
+            // }
         }
     }
 }

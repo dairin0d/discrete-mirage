@@ -125,7 +125,7 @@ const struct DMirRect DMIR_RECT_EMPTY = {
 };
 
 const struct DMirFrustum DMIR_FRUSTUM_DEFAULT = {
-    .min_depth = 0.01f,
+    .min_depth = 0.001f,
     .max_depth = 10000.0f,
     .focal_extent = 1,
     .focal_depth = 1,
