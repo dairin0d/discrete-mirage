@@ -20,6 +20,8 @@
 #define GRID2(x, y, z) ((x) + 2*((y) + 2*(z)))
 #define GRID3(x, y, z) ((x) + 3*((y) + 3*(z)))
 
+#define ABS(value) ((value) < 0 ? -(value) : (value))
+
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define MAX(a, b) ((a) < (b) ? (b) : (a))
 #define CLAMP(value, low, high) ((value) > (low) ? ((value) < (high) ? (value) : (high)) : (low))
@@ -133,7 +135,7 @@ typedef struct GridStackItem {
     uint32_t subnodes[8];
     uint8_t masks[8];
     uint8_t octants[8];
-    uint32_t node;
+    uint32_t addresses[8];
     SInt count;
     SInt level;
     SInt affine_id;
@@ -150,7 +152,7 @@ typedef struct OrthoStackItem {
     uint32_t subnodes[8];
     uint8_t masks[8];
     uint8_t octants[8];
-    uint32_t node;
+    uint32_t addresses[8];
     SInt count;
     SInt level;
 } OrthoStackItem;
@@ -170,8 +172,135 @@ typedef struct Subtree {
     Bounds bounds;
 } Subtree;
 
+#ifdef DMIR_ROW_POW2
+#define PIXEL_INDEX(buf, x, y) ((x) + ((y) << (buf)->row_shift))
+#else
+#define PIXEL_INDEX(buf, x, y) ((x) + ((y) * (buf)->size_x))
+#endif
+
+UInt pow2_ceil(UInt value) {
+    UInt shift = 0;
+    while ((1 << shift) < value) shift++;
+    return shift;
+}
+
+///////////////////
+// Lookup tables //
+///////////////////
+
+#define XYZ 0
+#define XZY 1
+#define YXZ 2
+#define YZX 3
+#define ZXY 4
+#define ZYX 5
+
+typedef struct Queue {
+    uint32_t octants;
+    uint32_t indices;
+} Queue;
+
+typedef struct Lookups {
+    uint8_t* counts; // mask -> bit count
+    uint32_t* octants; // mask, index -> octant
+    uint32_t* indices; // mask, octant -> index
+    Queue* sparse; // order, mask -> octants & indices
+    Queue* packed; // order, mask -> octants & indices
+} Lookups;
+
+void lookups_make_octants_indices_counts(Lookups* lookups) {
+    lookups->counts = malloc(256 * sizeof(uint8_t));
+    lookups->octants = malloc(256 * sizeof(uint32_t));
+    lookups->indices = malloc(256 * sizeof(uint32_t));
+    
+    for (SInt mask = 0; mask < 256; mask++) {
+        uint8_t count = 0;
+        uint32_t o2i = 0, i2o = 0;
+        for (uint32_t octant = 0; octant < 8; octant++) {
+            if ((mask & (1 << octant)) == 0) continue;
+            uint32_t index = count;
+            o2i |= (index | 0b1000) << (octant*4);
+            i2o |= (octant | 0b1000) << (index*4);
+            count++;
+        }
+        lookups->counts[mask] = count;
+        lookups->indices[mask] = o2i;
+        lookups->octants[mask] = i2o;
+    }
+}
+
+void lookups_make_queues(Lookups* lookups) {
+    const SInt queues_count = 6*8*256;
+    lookups->packed = malloc(queues_count * sizeof(Queue));
+    lookups->sparse = malloc(queues_count * sizeof(Queue));
+    
+    for (SInt order = 0; order < 6; order++) {
+        SInt x_shift = 0, y_shift = 0, z_shift = 0;
+        switch (order) {
+        case XYZ: x_shift = 0; y_shift = 1; z_shift = 2; break;
+        case XZY: x_shift = 0; y_shift = 2; z_shift = 1; break;
+        case YXZ: x_shift = 1; y_shift = 0; z_shift = 2; break;
+        case YZX: x_shift = 1; y_shift = 2; z_shift = 0; break;
+        case ZXY: x_shift = 2; y_shift = 0; z_shift = 1; break;
+        case ZYX: x_shift = 2; y_shift = 1; z_shift = 0; break;
+        }
+        
+        for (SInt start_octant = 0; start_octant < 8; start_octant++) {
+            for (SInt mask = 0; mask < 256; mask++) {
+                uint32_t o2i = lookups->indices[mask];
+                Queue queue = {.octants = 0, .indices = 0};
+                SInt shift = 0;
+                for (SInt z = 0; z <= 1; z++) {
+                    for (SInt y = 0; y <= 1; y++) {
+                        for (SInt x = 0; x <= 1; x++) {
+                            SInt flip = (x << x_shift) | (y << y_shift) | (z << z_shift);
+                            SInt octant = (start_octant ^ flip);
+                            if ((mask & (1 << octant)) == 0) continue;
+                            SInt index = (o2i >> (octant*4)) & 0b111;
+                            queue.octants |= ((octant | 0b1000) << shift);
+                            queue.indices |= ((index | 0b1000) << shift);
+                            shift += 4;
+                        }
+                    }
+                }
+                lookups->packed[(((order << 3) | start_octant) << 8) | mask] = queue;
+            }
+        }
+    }
+    
+    for (SInt i = 0; i < queues_count; i++) {
+        lookups->sparse[i].octants = lookups->sparse[i].indices = lookups->packed[i].octants;
+    }
+}
+
+Lookups* lookups_make() {
+    Lookups* lookups = malloc(sizeof(Lookups));
+    
+    if (lookups) {
+        lookups_make_octants_indices_counts(lookups);
+        lookups_make_queues(lookups);
+    }
+    
+    return lookups;
+}
+
+void lookups_free(Lookups* lookups) {
+    if (lookups->counts) free(lookups->counts);
+    if (lookups->octants) free(lookups->octants);
+    if (lookups->indices) free(lookups->indices);
+    if (lookups->sparse) free(lookups->sparse);
+    if (lookups->packed) free(lookups->packed);
+    
+    free(lookups);
+}
+
+/////////////////////////////////////
+// Rendering-related functionality //
+/////////////////////////////////////
+
 typedef struct BatcherInternal {
     Batcher api;
+    Lookups* lookups;
     AffineInfo* affine;
     Subtree* subtrees;
     Subtree** sorted;
@@ -215,18 +344,6 @@ static inline Depth dz_to_depth(BatcherInternal* batcher, float dz) {
     return (Depth)dz;
 }
 #endif
-
-#ifdef DMIR_ROW_POW2
-#define PIXEL_INDEX(buf, x, y) ((x) + ((y) << (buf)->row_shift))
-#else
-#define PIXEL_INDEX(buf, x, y) ((x) + ((y) * (buf)->size_x))
-#endif
-
-UInt pow2_ceil(UInt value) {
-    UInt shift = 0;
-    while ((1 << shift) < value) shift++;
-    return shift;
-}
 
 static inline SInt is_occluded_quad(Framebuffer* framebuffer, Rect* rect, Depth depth) {
     #ifndef DMIR_USE_OCCLUSION
@@ -379,6 +496,22 @@ SInt calculate_starting_octant_perspective(ProjectedVertex* grid, float eye_z) {
     SInt bit_y = (dot_y <= 0 ? 0 : 2);
     SInt bit_z = (dot_z <= 0 ? 0 : 4);
     return bit_x | bit_y | bit_z;
+}
+
+SInt calculate_starting_octant_ortho(Vector3S* matrix) {
+    SInt bit_x = (matrix[1].y * matrix[2].x <= matrix[1].x * matrix[2].y ? 0 : 1);
+    SInt bit_y = (matrix[2].y * matrix[0].x <= matrix[2].x * matrix[0].y ? 0 : 2);
+    SInt bit_z = (matrix[0].y * matrix[1].x <= matrix[0].x * matrix[1].y ? 0 : 4);
+    return bit_x | bit_y | bit_z;
+}
+
+SInt calculate_octant_order(Vector3S* matrix) {
+    Depth xz = ABS(matrix[0].z);
+    Depth yz = ABS(matrix[1].z);
+    Depth zz = ABS(matrix[2].z);
+    return (xz <= yz
+        ? (xz <= zz ? (yz <= zz ? XYZ : XZY) : ZXY)
+        : (yz <= zz ? (xz <= zz ? YXZ : YZX) : ZYX));
 }
 
 #define GRID_INIT(grid, cage, x, y, z, batcher) {\
@@ -689,8 +822,13 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher, Framebuf
     position.z = matrix[3].z;
     
     // Calculate the starting octant
-    SInt starting_octant = calculate_starting_octant(grid);
+    SInt octant_order = calculate_octant_order(matrix);
+    SInt starting_octant = calculate_starting_octant_ortho(matrix);
     SInt starting_octant_reverse = (~starting_octant) & 7;
+    
+    Queue* queues = (octree->is_packed ? batcher->lookups->packed : batcher->lookups->sparse);
+    Queue* queues_forward = queues + (((octant_order << 3) | (starting_octant ^ 0b000)) << 8);
+    Queue* queues_reverse = queues + (((octant_order << 3) | (starting_octant ^ 0b111)) << 8);
     
     SInt mask = *PTR_INDEX(octree->mask, address);
     uint32_t child_start = *PTR_INDEX(octree->addr, address);
@@ -712,9 +850,9 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher, Framebuf
             stack->count--;
             child_start = stack->subnodes[stack->count];
             mask = stack->masks[stack->count];
-            SInt octant = stack->octants[stack->count];
-            address = stack->node + octant;
+            address = stack->addresses[stack->count];
             
+            SInt octant = stack->octants[stack->count];
             position.x = stack->center.x + stack->deltas[octant].x;
             position.y = stack->center.y + stack->deltas[octant].y;
             position.z = stack->center.z + stack->deltas[octant].z;
@@ -790,12 +928,10 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher, Framebuf
             #ifdef DMIR_USE_BLIT_AT_2X2
             if (size_max <= 1) {
                 Vector3S* deltas = (stack+1)->deltas;
-                for (SInt i = 0; i < 8; i++) {
-                    SInt octant = starting_octant ^ i;
-                    if ((mask & (1 << octant)) == 0) continue;
-                    
-                    // address = *PTR_INDEX(octree->addr, child_start+octant);
-                    address = child_start + octant;
+                Queue queue = queues_reverse[mask];
+                for (; queue.indices != 0; queue.indices >>= 4, queue.octants >>= 4) {
+                    SInt octant = (queue.octants & 7);
+                    address = child_start + (queue.indices & 7);
                     
                     SInt x = COORD_TO_PIXEL(position.x + deltas[octant].x);
                     if ((x < stack->rect.min_x) | (x > stack->rect.max_x)) continue;
@@ -818,18 +954,17 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher, Framebuf
         
         // Push non-empty children on the stack
         stack++;
-        stack->node = child_start;
         stack->count = 0;
         stack->rect = rect;
         stack->center = position;
         
-        for (SInt i = 0; i < 8; i++) {
-            SInt octant = starting_octant_reverse ^ i;
-            if ((mask & (1 << octant)) == 0) continue;
-            
-            stack->octants[stack->count] = octant;
-            stack->subnodes[stack->count] = *PTR_INDEX(octree->addr, child_start+octant);
-            stack->masks[stack->count] = *PTR_INDEX(octree->mask, child_start+octant);
+        Queue queue = queues_reverse[mask];
+        for (; queue.indices != 0; queue.indices >>= 4, queue.octants >>= 4) {
+            address = child_start + (queue.indices & 7);
+            stack->octants[stack->count] = (queue.octants & 7);
+            stack->addresses[stack->count] = address;
+            stack->subnodes[stack->count] = *PTR_INDEX(octree->addr, address);
+            stack->masks[stack->count] = *PTR_INDEX(octree->mask, address);
             stack->count++;
         }
     } while (stack > stack_start);
@@ -912,6 +1047,8 @@ Batcher* dmir_batcher_make() {
     BatcherInternal* batcher = malloc(sizeof(BatcherInternal));
     
     if (batcher) {
+        batcher->lookups = lookups_make();
+        
         batcher->affine_size = 1024;
         batcher->affine = malloc(batcher->affine_size * sizeof(AffineInfo));
         
@@ -933,6 +1070,8 @@ Batcher* dmir_batcher_make() {
 
 void dmir_batcher_free(Batcher* batcher_ptr) {
     BatcherInternal* batcher = (BatcherInternal*)batcher_ptr;
+    
+    if (batcher->lookups) lookups_free(batcher->lookups);
     
     if (batcher->affine) free(batcher->affine);
     
@@ -1059,6 +1198,8 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer,
     stack->rect = viewport;
     stack->is_behind = (bounds.min_z <= batcher->eye_z);
     
+    Queue* queues = (octree->is_packed ? batcher->lookups->packed : batcher->lookups->sparse);
+    
     goto grid_initialized;
     
     do {
@@ -1071,10 +1212,10 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer,
             stack->count--;
             child_start = stack->subnodes[stack->count];
             mask = stack->masks[stack->count];
-            SInt octant = stack->octants[stack->count];
-            address = stack->node + octant;
+            address = stack->addresses[stack->count];
             
             // Copy corner vertices from the parent grid's sub-octant vertices
+            SInt octant = stack->octants[stack->count];
             initialize_subgrid(stack->grid, (stack-1)->grid, octant);
         }
         
@@ -1188,20 +1329,19 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer,
         
         // Push non-empty children on the stack
         stack++;
-        stack->node = child_start;
         stack->count = 0;
         stack->level = (stack-1)->level + 1;
         stack->rect = rect;
         stack->is_behind = intersects_eye_plane;
         stack->affine_id = (stack-1)->affine_id;
         
-        for (SInt i = 0; i < 8; i++) {
-            SInt octant = starting_octant ^ i;
-            if ((mask & (1 << octant)) == 0) continue;
-            
-            stack->octants[stack->count] = octant;
-            stack->subnodes[stack->count] = *PTR_INDEX(octree->addr, child_start+octant);
-            stack->masks[stack->count] = *PTR_INDEX(octree->mask, child_start+octant);
+        Queue queue = (queues + (starting_octant << 8))[mask];
+        for (; queue.indices != 0; queue.indices >>= 4, queue.octants >>= 4) {
+            address = child_start + (queue.indices & 7);
+            stack->octants[stack->count] = (queue.octants & 7);
+            stack->addresses[stack->count] = address;
+            stack->subnodes[stack->count] = *PTR_INDEX(octree->addr, address);
+            stack->masks[stack->count] = *PTR_INDEX(octree->mask, address);
             stack->count++;
         }
     } while (stack > stack_start);
@@ -1297,6 +1437,8 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher, Framebuff
     stack->rect = viewport;
     stack->is_behind = (bounds.min_z <= batcher->eye_z);
     
+    Queue* queues = (octree->is_packed ? batcher->lookups->packed : batcher->lookups->sparse);
+    
     goto grid_initialized;
     
     do {
@@ -1309,10 +1451,10 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher, Framebuff
             stack->count--;
             child_start = stack->subnodes[stack->count];
             mask = stack->masks[stack->count];
-            SInt octant = stack->octants[stack->count];
-            address = stack->node + octant;
+            address = stack->addresses[stack->count];
             
             // Copy corner vertices from the parent grid's sub-octant vertices
+            SInt octant = stack->octants[stack->count];
             initialize_subgrid(stack->grid, (stack-1)->grid, octant);
         }
         
@@ -1431,19 +1573,18 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher, Framebuff
         
         // Push non-empty children on the stack
         stack++;
-        stack->node = child_start;
         stack->count = 0;
         stack->level = (stack-1)->level + 1;
         stack->rect = rect;
         stack->is_behind = intersects_eye_plane;
         
-        for (SInt i = 0; i < 8; i++) {
-            SInt octant = starting_octant ^ i;
-            if ((mask & (1 << octant)) == 0) continue;
-            
-            stack->octants[stack->count] = octant;
-            stack->subnodes[stack->count] = *PTR_INDEX(octree->addr, child_start+octant);
-            stack->masks[stack->count] = *PTR_INDEX(octree->mask, child_start+octant);
+        Queue queue = (queues + (starting_octant << 8))[mask];
+        for (; queue.indices != 0; queue.indices >>= 4, queue.octants >>= 4) {
+            address = child_start + (queue.indices & 7);
+            stack->octants[stack->count] = (queue.octants & 7);
+            stack->addresses[stack->count] = address;
+            stack->subnodes[stack->count] = *PTR_INDEX(octree->addr, address);
+            stack->masks[stack->count] = *PTR_INDEX(octree->mask, address);
             stack->count++;
         }
     } while (stack > stack_start);

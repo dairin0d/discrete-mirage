@@ -54,8 +54,11 @@ struct ProgramState {
 
 const int OCTREE_LOAD_RAW = 0;
 const int OCTREE_LOAD_SPLIT = 1;
+const int OCTREE_LOAD_PACKED = 2;
 
-int octree_load_mode = OCTREE_LOAD_RAW;
+// int octree_load_mode = OCTREE_LOAD_RAW;
+// int octree_load_mode = OCTREE_LOAD_SPLIT;
+int octree_load_mode = OCTREE_LOAD_PACKED;
 
 static void read_file(std::string path, int* file_size, char** data) {
     file_size[0] = -1;
@@ -92,6 +95,7 @@ DMirOctree* load_octree(std::string path, int mode) {
     if ((file_data == nullptr) || (file_size < 8*node_size)) return nullptr;
     
     DMirOctree* octree = new DMirOctree();
+    octree->is_packed = false;
     octree->count = file_size / node_size;
     octree->addr = (uint32_t*)file_data;
     octree->mask = ((uint8_t*)file_data) + 4;
@@ -100,16 +104,49 @@ DMirOctree* load_octree(std::string path, int mode) {
     octree->mask_stride = 8;
     octree->data_stride = 8;
     
-    if (mode == OCTREE_LOAD_SPLIT) {
-        char* split_data = new char[octree->count * (4 + 1 + 3)];
-        uint32_t* addr = (uint32_t*)split_data;
+    if (mode != OCTREE_LOAD_RAW) {
+        char* new_data = new char[octree->count * (4 + 1 + 3)];
+        uint32_t* addr = (uint32_t*)new_data;
         uint8_t* mask = (uint8_t*)(((char*)addr) + octree->count*4);
         DMirColor* color = (DMirColor*)(mask + octree->count*1);
-        for (int i = 0; i < octree->count; i++) {
-            addr[i] = *PTR_INDEX(octree->addr, i);
-            mask[i] = *PTR_INDEX(octree->mask, i);
-            color[i] = *((DMirColor*)PTR_INDEX(octree->data, i));
+        
+        if (mode == OCTREE_LOAD_PACKED) {
+            octree->is_packed = true;
+            
+            uint count = 1;
+            addr[0] = 0;
+            
+            for (uint index = 0; index < count; index++) {
+                auto node_address = *PTR_INDEX(octree->addr, addr[index]);
+                auto node_mask = *PTR_INDEX(octree->mask, addr[index]);
+                auto node_color = *((DMirColor*)PTR_INDEX(octree->data, addr[index]));
+                addr[index] = count;
+                mask[index] = node_mask;
+                color[index] = node_color;
+                
+                for (uint octant = 0; octant < 8; octant++) {
+                    if ((node_mask & (1 << octant)) == 0) continue;
+                    
+                    addr[count] = node_address + octant;
+                    count++;
+                    
+                    if (count > octree->count) {
+                        // Recursion detected, can't proceed
+                        delete new_data;
+                        delete file_data;
+                        delete octree;
+                        return nullptr;
+                    }
+                }
+            }
+        } else {
+            for (int i = 0; i < octree->count; i++) {
+                addr[i] = *PTR_INDEX(octree->addr, i);
+                mask[i] = *PTR_INDEX(octree->mask, i);
+                color[i] = *((DMirColor*)PTR_INDEX(octree->data, i));
+            }
         }
+        
         delete file_data;
         
         octree->addr = addr;
@@ -132,6 +169,7 @@ DMirOctree* make_recursive_cube(int r, int g, int b) {
     }
     
     DMirOctree* octree = new DMirOctree();
+    octree->is_packed = false;
     octree->count = 8;
     octree->addr = octree_data;
     octree->mask = ((uint8_t*)octree_data) + 4;
