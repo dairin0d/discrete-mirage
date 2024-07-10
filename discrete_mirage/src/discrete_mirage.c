@@ -219,14 +219,18 @@ UInt pow2_ceil(UInt value) {
     return shift;
 }
 
-static inline SInt is_occluded_quad(Framebuffer* framebuffer,
-    Rect rect, Depth depth)
-{
-    for (SInt y = rect.min_y; y <= rect.max_y; y++) {
+static inline SInt is_occluded_quad(Framebuffer* framebuffer, Rect* rect, Depth depth) {
+    #ifndef DMIR_USE_OCCLUSION
+    return FALSE;
+    #endif
+    for (SInt y = rect->min_y; y <= rect->max_y; y++) {
         SInt row = PIXEL_INDEX(framebuffer, 0, y);
-        for (SInt x = rect.min_x; x <= rect.max_x; x++) {
+        for (SInt x = rect->min_x; x <= rect->max_x; x++) {
             if (framebuffer->depth[row+x] > depth) return FALSE;
         }
+        #ifdef DMIR_SKIP_OCCLUDED_ROWS
+        rect->min_y = y + 1;
+        #endif
     }
     return TRUE;
 }
@@ -741,7 +745,7 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher, Framebuf
             }
             
             // Do an occlusion check
-            if (is_occluded_quad(framebuffer, rect, depth)) continue;
+            if (is_occluded_quad(framebuffer, &rect, depth)) continue;
         }
         
         // Push non-empty children on the stack
@@ -826,7 +830,7 @@ void dmir_framebuffer_clear(Framebuffer* framebuffer) {
 }
 
 Bool dmir_is_occluded_quad(Framebuffer* framebuffer, Rect rect, Depth depth) {
-    return (Bool)is_occluded_quad(framebuffer, rect, depth);
+    return (Bool)is_occluded_quad(framebuffer, &rect, depth);
 }
 
 Batcher* dmir_batcher_make() {
@@ -1052,7 +1056,7 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer,
             Depth depth = z_to_depth(batcher, bounds.min_z);
             
             // Do an occlusion check
-            if (is_occluded_quad(framebuffer, rect, depth)) continue;
+            if (is_occluded_quad(framebuffer, &rect, depth)) continue;
         }
         
         // Calculate the remaining (non-corner) vertices
@@ -1309,7 +1313,7 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher, Framebuff
             #endif
             
             // Do an occlusion check
-            if (is_occluded_quad(framebuffer, rect, depth)) continue;
+            if (is_occluded_quad(framebuffer, &rect, depth)) continue;
         }
         
         // Calculate the remaining (non-corner) vertices
