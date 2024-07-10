@@ -155,6 +155,13 @@ typedef struct OrthoStackItem {
     SInt level;
 } OrthoStackItem;
 
+typedef struct Fragment {
+    int32_t x;
+    int32_t y;
+    Depth z;
+    uint32_t address;
+} Fragment;
+
 typedef struct Subtree {
     uint32_t affine_id;
     ProjectedVertex cage[CAGE_SIZE];
@@ -189,6 +196,8 @@ typedef struct BatcherInternal {
 typedef struct RendererInternal {
     Renderer api;
     GridStackItem* stack;
+    Fragment* fragments;
+    SInt fragments_size;
 } RendererInternal;
 
 #ifdef DMIR_DEPTH_INT32
@@ -490,6 +499,19 @@ void calculate_screen_bounds(ProjectedVertex* grid, Bounds* bounds, float* max_s
     }
 }
 
+static inline void write_pixel(Framebuffer* framebuffer, SInt i,
+    int32_t affine_id, uint32_t address, Octree* octree)
+{
+    #ifdef DMIR_USE_SPLAT_COLOR
+    uint8_t* data_ptr = PTR_INDEX(octree->data, address);
+    Color* color_ptr = (Color*)data_ptr;
+    framebuffer->color[i] = *color_ptr;
+    #else
+    framebuffer->voxel[i].affine_id = affine_id;
+    framebuffer->voxel[i].address = address;
+    #endif
+}
+
 static inline void splat_pixel(Framebuffer* framebuffer, SInt x, SInt y,
     Depth depth, int32_t affine_id, uint32_t address, Octree* octree)
 {
@@ -497,15 +519,23 @@ static inline void splat_pixel(Framebuffer* framebuffer, SInt x, SInt y,
     
     if (depth < framebuffer->depth[i]) {
         framebuffer->depth[i] = depth;
+        write_pixel(framebuffer, i, affine_id, address, octree);
+    }
+}
+
+static inline void splat_deferred(Framebuffer* framebuffer, Fragment** fragments,
+    int32_t x, int32_t y, Depth depth, uint32_t address)
+{
+    SInt i = PIXEL_INDEX(framebuffer, x, y);
+    
+    if (depth < framebuffer->depth[i]) {
+        framebuffer->depth[i] = depth;
         
-        #ifdef DMIR_USE_SPLAT_COLOR
-        uint8_t* data_ptr = PTR_INDEX(octree->data, address);
-        Color* color_ptr = (Color*)data_ptr;
-        framebuffer->color[i] = *color_ptr;
-        #else
-        framebuffer->voxel[i].affine_id = affine_id;
-        framebuffer->voxel[i].address = address;
-        #endif
+        fragments[0]->x = x;
+        fragments[0]->y = y;
+        fragments[0]->z = depth;
+        fragments[0]->address = address;
+        fragments[0]++;
     }
 }
 
@@ -668,6 +698,8 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher, Framebuf
     Depth min_depth = z_to_depth(batcher, batcher->frustum_bounds.min_z);
     Depth max_depth = z_to_depth(batcher, batcher->frustum_bounds.max_z);
     
+    Fragment* fragments = renderer->fragments;
+    
     goto grid_initialized;
     
     do {
@@ -707,6 +739,7 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher, Framebuf
         rect.min_y = COORD_TO_PIXEL(position.y - stack->extent_y);
         rect.max_y = COORD_TO_PIXEL(position.y + stack->extent_y);
         
+        // Calculate node size (in pixels)
         SInt size_x = rect.max_x - rect.min_x;
         SInt size_y = rect.max_y - rect.min_y;
         SInt size_max = MAX(size_x, size_y);
@@ -717,7 +750,6 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher, Framebuf
         // Skip if not visible
         if ((rect.min_x > rect.max_x) | (rect.min_y > rect.max_y)) continue;
         
-        // Calculate node size (in pixels)
         SInt is_pixel = (size_max == 0);
         SInt is_splat = (!mask) | (stack->level == effects.max_level);
         
@@ -727,7 +759,11 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher, Framebuf
             #ifdef DMIR_USE_SPLAT_PIXEL
             // Splat if size is 1 pixel
             if (is_pixel) {
+                #ifdef DMIR_USE_SPLAT_DEFERRED
+                splat_deferred(framebuffer, &fragments, rect.min_x, rect.min_y, position.z, address);
+                #else
                 splat_pixel(framebuffer, rect.min_x, rect.min_y, position.z, affine_id, address, octree);
+                #endif
                 continue;
             }
             #else
@@ -738,7 +774,11 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher, Framebuf
             if (is_splat) {
                 for (SInt y = rect.min_y; y <= rect.max_y; y++) {
                     for (SInt x = rect.min_x; x <= rect.max_x; x++) {
+                        #ifdef DMIR_USE_SPLAT_DEFERRED
+                        splat_deferred(framebuffer, &fragments, x, y, position.z, address);
+                        #else
                         splat_pixel(framebuffer, x, y, position.z, affine_id, address, octree);
+                        #endif
                     }
                 }
                 continue;
@@ -765,7 +805,11 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher, Framebuf
                     
                     Depth z = position.z + deltas[octant].z;
                     
+                    #ifdef DMIR_USE_SPLAT_DEFERRED
+                    splat_deferred(framebuffer, &fragments, x, y, z, address);
+                    #else
                     splat_pixel(framebuffer, x, y, z, affine_id, address, octree);
+                    #endif
                 }
                 continue;
             }
@@ -789,6 +833,13 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher, Framebuf
             stack->count++;
         }
     } while (stack > stack_start);
+    
+    #ifdef DMIR_USE_SPLAT_DEFERRED
+    for (Fragment* fragment = renderer->fragments; fragment != fragments; fragment++) {
+        SInt i = PIXEL_INDEX(framebuffer, fragment->x, fragment->y);
+        write_pixel(framebuffer, i, affine_id, fragment->address, octree);
+    }
+    #endif
 }
 
 ///////////////////////////////////////////
@@ -1196,6 +1247,9 @@ Renderer* dmir_renderer_make() {
     
     if (renderer) {
         renderer->stack = malloc(MAX_STACK_DEPTH * sizeof(GridStackItem));
+        
+        renderer->fragments_size = 0;
+        renderer->fragments = NULL;
     }
     
     return (Renderer*)renderer;
@@ -1205,6 +1259,8 @@ void dmir_renderer_free(Renderer* renderer_ptr) {
     RendererInternal* renderer = (RendererInternal*)renderer_ptr;
     
     free(renderer->stack);
+    
+    if (renderer->fragments) free(renderer->fragments);
     
     free(renderer);
 }
@@ -1397,6 +1453,14 @@ void dmir_renderer_draw(Renderer* renderer_ptr) {
     RendererInternal* renderer = (RendererInternal*)renderer_ptr;
     Framebuffer* framebuffer = renderer->api.framebuffer;
     BatcherInternal* batcher = (BatcherInternal*)renderer->api.batcher;
+    
+    SInt size_x = renderer->api.rect.max_x - renderer->api.rect.min_x + 1;
+    SInt size_y = renderer->api.rect.max_y - renderer->api.rect.min_y + 1;
+    SInt rect_area = size_x * size_y;
+    if (rect_area > renderer->fragments_size) {
+        renderer->fragments_size = 1 << pow2_ceil(rect_area);
+        renderer->fragments = realloc(renderer->fragments, renderer->fragments_size);
+    }
     
     for (SInt index = 0; index < batcher->renderable_count; index++) {
         render_cage(renderer, batcher, framebuffer, batcher->sorted[index]);

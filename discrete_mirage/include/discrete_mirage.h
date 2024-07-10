@@ -30,6 +30,7 @@ extern "C" {
 #define DMIR_SKIP_OCCLUDED_ROWS
 
 // #define DMIR_USE_SPLAT_COLOR
+// #define DMIR_USE_SPLAT_DEFERRED
 #define DMIR_USE_SPLAT_PIXEL
 #define DMIR_USE_BLIT_AT_2X2
 
