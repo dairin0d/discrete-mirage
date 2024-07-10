@@ -13,6 +13,9 @@ extern "C" {
 // #define DMIR_DEPTH_INT32
 #define DMIR_DEPTH_FLOAT
 
+// #define DMIR_COORD_FIXED 16
+#define DMIR_COORD_FLOAT
+
 // #define DMIR_ROW_POW2
 
 // #define DMIR_MINMAX_IF
@@ -20,6 +23,8 @@ extern "C" {
 
 // #define DMIR_INT_SIZE 32
 // #define DMIR_INT_SIZE 64
+
+#define DMIR_USE_ORTHO
 
 // #define DMIR_USE_SPLAT_COLOR
 #define DMIR_USE_SPLAT_PIXEL
@@ -98,6 +103,7 @@ typedef struct DMirBatcher {
     DMirFrustum frustum;
     float split_factor;
     float affine_distortion;
+    float ortho_distortion;
     DMirRect rect;
 } DMirBatcher;
 

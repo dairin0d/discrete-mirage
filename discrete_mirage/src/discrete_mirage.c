@@ -55,6 +55,33 @@ typedef int SInt;
 typedef unsigned int UInt;
 #endif
 
+#ifdef DMIR_COORD_FIXED
+typedef int32_t Coord;
+#define SUBPIXEL_BITS DMIR_COORD_FIXED
+#define SUBPIXEL_SIZE (1 << SUBPIXEL_BITS)
+#define SUBPIXEL_HALF (SUBPIXEL_SIZE >> 1)
+#define ORTHO_MAX_SUBDIVISIONS (31 - SUBPIXEL_BITS)
+#define ORTHO_LEVEL_LIMIT (28 - SUBPIXEL_BITS)
+#define COORD_TO_PIXEL(coord) ((coord) >> SUBPIXEL_BITS)
+#define PIXEL_TO_COORD(pixel) (((pixel) << SUBPIXEL_BITS) + SUBPIXEL_HALF)
+#define COORD_HALVE(coord) ((coord) >> 1)
+#else
+typedef float Coord;
+#define SUBPIXEL_SIZE 1.0f
+#define SUBPIXEL_HALF 0.5f
+#define ORTHO_MAX_SUBDIVISIONS 31
+#define ORTHO_LEVEL_LIMIT 31
+#define COORD_TO_PIXEL(coord) ((int32_t)(coord))
+#define PIXEL_TO_COORD(pixel) ((pixel) + 0.5f)
+#define COORD_HALVE(coord) ((coord) * 0.5f)
+#endif
+
+#ifdef DMIR_DEPTH_INT32
+#define DEPTH_HALVE(depth) ((depth) >> 1)
+#else
+#define DEPTH_HALVE(depth) ((depth) * 0.5f)
+#endif
+
 typedef DMirBool Bool;
 typedef DMirDepth Depth;
 typedef DMirColor Color;
@@ -82,6 +109,13 @@ typedef struct Vector3I {
     int32_t x, y, z;
 } Vector3I;
 
+// "S" stands for "screen-space"
+typedef struct Vector3S {
+    Coord x;
+    Coord y;
+    DMirDepth z;
+} Vector3S;
+
 typedef struct ProjectedVertex {
     Vector3F position;
     Vector2F projection;
@@ -105,6 +139,21 @@ typedef struct GridStackItem {
     SInt affine_id;
     SInt is_behind;
 } GridStackItem;
+
+typedef struct OrthoStackItem {
+    Vector3S deltas[CAGE_SIZE];
+    Vector3S center;
+    Coord extent_x;
+    Coord extent_y;
+    Depth extent_z;
+    Rect rect;
+    uint32_t subnodes[8];
+    uint8_t masks[8];
+    uint8_t octants[8];
+    uint32_t node;
+    SInt count;
+    SInt level;
+} OrthoStackItem;
 
 typedef struct Subtree {
     uint32_t affine_id;
@@ -146,9 +195,15 @@ typedef struct RendererInternal {
 static inline Depth z_to_depth(BatcherInternal* batcher, float z) {
     return (Depth)((z - batcher->api.frustum.min_depth) * batcher->depth_factor);
 }
+static inline Depth dz_to_depth(BatcherInternal* batcher, float dz) {
+    return (Depth)(dz * batcher->depth_factor);
+}
 #else
 static inline Depth z_to_depth(BatcherInternal* batcher, float z) {
     return (Depth)z;
+}
+static inline Depth dz_to_depth(BatcherInternal* batcher, float dz) {
+    return (Depth)dz;
 }
 #endif
 
@@ -208,7 +263,11 @@ static inline void project(ProjectedVertex* vertex, BatcherInternal* batcher) {
 #define GRID_AXIS(grid, x, y, z, component) (\
     grid[GRID3(1+x,1+y,1+z)].component - grid[GRID3(1,1,1)].component\
 )
-#define GRID_AXIS_CAGE(grid, x, y, z, component) 0.5f * (\
+
+#define GRID_CENTER_CAGE(grid, component) (\
+    0.5f * (grid[GRID3(0,0,0)].component + grid[GRID3(2,2,2)].component)\
+)
+#define GRID_AXIS_CAGE(grid, x, y, z, component) 0.25f * (\
     (grid[GRID3(0+(x)*2,0+(y)*2,0+(z)*2)].component - grid[GRID3(0,0,0)].component) -\
     (grid[GRID3(2-(x)*2,2-(y)*2,2-(z)*2)].component - grid[GRID3(2,2,2)].component)\
 )
@@ -446,6 +505,264 @@ static inline void splat_pixel(Framebuffer* framebuffer, SInt x, SInt y,
     }
 }
 
+SInt calculate_max_level(Vector3F* fmatrix) {
+    float gap_x = fabsf(fmatrix[0].x) + fabsf(fmatrix[1].x) + fabsf(fmatrix[2].x);
+    float gap_y = fabsf(fmatrix[0].y) + fabsf(fmatrix[1].y) + fabsf(fmatrix[2].y);
+    float gap_max = MAX(gap_x, gap_y);
+    for (SInt max_level = 0; max_level <= ORTHO_LEVEL_LIMIT; max_level++) {
+        if (gap_max < (1 << max_level)) return max_level;
+    }
+    return -1; // too big; can't render
+}
+
+SInt calculate_ortho_matrix(BatcherInternal* batcher, ProjectedVertex* grid, Vector3S* matrix) {
+    Vector3F* fmatrix = (Vector3F*)matrix;
+    fmatrix[0].x = GRID_AXIS_CAGE(grid, 1, 0, 0, projection.x);
+    fmatrix[0].y = GRID_AXIS_CAGE(grid, 1, 0, 0, projection.y);
+    fmatrix[0].z = GRID_AXIS_CAGE(grid, 1, 0, 0, position.z);
+    fmatrix[1].x = GRID_AXIS_CAGE(grid, 0, 1, 0, projection.x);
+    fmatrix[1].y = GRID_AXIS_CAGE(grid, 0, 1, 0, projection.y);
+    fmatrix[1].z = GRID_AXIS_CAGE(grid, 0, 1, 0, position.z);
+    fmatrix[2].x = GRID_AXIS_CAGE(grid, 0, 0, 1, projection.x);
+    fmatrix[2].y = GRID_AXIS_CAGE(grid, 0, 0, 1, projection.y);
+    fmatrix[2].z = GRID_AXIS_CAGE(grid, 0, 0, 1, position.z);
+    fmatrix[3].x = GRID_CENTER_CAGE(grid, projection.x);
+    fmatrix[3].y = GRID_CENTER_CAGE(grid, projection.y);
+    fmatrix[3].z = GRID_CENTER_CAGE(grid, position.z);
+    
+    SInt max_level = calculate_max_level(fmatrix);
+    if (max_level < 0) return -1;
+    
+    #ifdef DMIR_COORD_FIXED
+    float level_scale = (float)(1 << (SUBPIXEL_BITS - max_level));
+    matrix[0].x = (int32_t)(fmatrix[0].x * level_scale);
+    matrix[0].y = (int32_t)(fmatrix[0].y * level_scale);
+    matrix[1].x = (int32_t)(fmatrix[1].x * level_scale);
+    matrix[1].y = (int32_t)(fmatrix[1].y * level_scale);
+    matrix[2].x = (int32_t)(fmatrix[2].x * level_scale);
+    matrix[2].y = (int32_t)(fmatrix[2].y * level_scale);
+    matrix[3].x = (int32_t)(fmatrix[3].x * SUBPIXEL_SIZE);
+    matrix[3].y = (int32_t)(fmatrix[3].y * SUBPIXEL_SIZE);
+    matrix[0].x = (matrix[0].x >> 1) << max_level;
+    matrix[0].y = (matrix[0].y >> 1) << max_level;
+    matrix[1].x = (matrix[1].x >> 1) << max_level;
+    matrix[1].y = (matrix[1].y >> 1) << max_level;
+    matrix[2].x = (matrix[2].x >> 1) << max_level;
+    matrix[2].y = (matrix[2].y >> 1) << max_level;
+    #else
+    matrix[0].x *= 0.5f;
+    matrix[0].y *= 0.5f;
+    matrix[1].x *= 0.5f;
+    matrix[1].y *= 0.5f;
+    matrix[2].x *= 0.5f;
+    matrix[2].y *= 0.5f;
+    #endif
+    
+    matrix[0].z = z_to_depth(batcher, fmatrix[0].z);
+    matrix[1].z = dz_to_depth(batcher, fmatrix[1].z);
+    matrix[2].z = dz_to_depth(batcher, fmatrix[2].z);
+    matrix[3].z = dz_to_depth(batcher, fmatrix[3].z);
+    
+    #ifdef DMIR_DEPTH_INT32
+    matrix[0].z >>= 1;
+    matrix[1].z >>= 1;
+    matrix[2].z >>= 1;
+    #else
+    matrix[0].z *= 0.5f;
+    matrix[1].z *= 0.5f;
+    matrix[2].z *= 0.5f;
+    #endif
+    
+    return max_level;
+}
+
+void calculate_ortho_extent(Vector3S* matrix, Vector3S* extent) {
+    #ifdef DMIR_COORD_FIXED
+    extent->x = (abs(matrix[0].x) + abs(matrix[1].x) + abs(matrix[2].x)) * 2;
+    extent->y = (abs(matrix[0].y) + abs(matrix[1].y) + abs(matrix[2].y)) * 2;
+    #else
+    extent->x = (fabsf(matrix[0].x) + fabsf(matrix[1].x) + fabsf(matrix[2].x)) * 2;
+    extent->y = (fabsf(matrix[0].y) + fabsf(matrix[1].y) + fabsf(matrix[2].y)) * 2;
+    #endif
+    
+    #ifdef DMIR_DEPTH_INT32
+    extent->z = (abs(matrix[0].z) + abs(matrix[1].z) + abs(matrix[2].z)) * 2;
+    #else
+    extent->z = (fabsf(matrix[0].z) + fabsf(matrix[1].z) + fabsf(matrix[2].z)) * 2;
+    #endif
+}
+
+void calculate_ortho_deltas(Vector3S* deltas, Vector3S* matrix, int32_t factor) {
+    SInt octant = 0;
+    for (SInt z = -1; z <= 1; z += 2) {
+        for (SInt y = -1; y <= 1; y += 2) {
+            for (SInt x = -1; x <= 1; x += 2) {
+                deltas[octant].x = (matrix[0].x * x + matrix[1].x * y + matrix[2].x * z) * factor;
+                deltas[octant].y = (matrix[0].y * x + matrix[1].y * y + matrix[2].y * z) * factor;
+                deltas[octant].z = (matrix[0].z * x + matrix[1].z * y + matrix[2].z * z) * factor;
+                octant++;
+            }
+        }
+    }
+}
+
+void render_ortho(RendererInternal* renderer, BatcherInternal* batcher, Framebuffer* framebuffer,
+    uint32_t affine_id, Octree* octree, uint32_t address, Effects effects,
+    ProjectedVertex* grid, OrthoStackItem* stack_start)
+{
+    Vector3S matrix[4];
+    SInt max_level = calculate_ortho_matrix(batcher, grid, matrix);
+    if (max_level < 0) return;
+    
+    effects.max_level = (effects.max_level < 0 ? max_level : MIN(effects.max_level, max_level));
+    
+    Vector3S extent;
+    calculate_ortho_extent(matrix, &extent);
+    
+    Coord dilation = (Coord)(effects.dilation_abs * SUBPIXEL_SIZE);
+    dilation += (Coord)(effects.dilation_rel * 2 * MAX(extent.x, extent.y));
+    
+    OrthoStackItem* stack = stack_start;
+    
+    calculate_ortho_deltas(stack->deltas, matrix, 2);
+    
+    stack->extent_x = extent.x;
+    stack->extent_y = extent.y;
+    stack->extent_z = extent.z;
+    
+    for (SInt level = 1; level <= effects.max_level; level++) {
+        stack[level].extent_x = COORD_HALVE(stack[level-1].extent_x);
+        stack[level].extent_y = COORD_HALVE(stack[level-1].extent_y);
+        stack[level].extent_z = DEPTH_HALVE(stack[level-1].extent_z);
+        for (SInt octant = 0; octant < 8; octant++) {
+            stack[level].deltas[octant].x = COORD_HALVE(stack[level-1].deltas[octant].x);
+            stack[level].deltas[octant].y = COORD_HALVE(stack[level-1].deltas[octant].y);
+            stack[level].deltas[octant].z = DEPTH_HALVE(stack[level-1].deltas[octant].z);
+        }
+    }
+    
+    for (SInt level = 0; level <= effects.max_level; level++) {
+        stack[level].level = level;
+        stack[level].extent_x += dilation;
+        stack[level].extent_y += dilation;
+    }
+    
+    stack->rect = renderer->api.rect;
+    
+    Vector3S position;
+    position.x = matrix[3].x;
+    position.y = matrix[3].y;
+    position.z = matrix[3].z;
+    
+    // Calculate the starting octant
+    SInt starting_octant = calculate_starting_octant(grid);
+    starting_octant = (~starting_octant) & 7; // opposite (reverse order)
+    
+    SInt mask = *PTR_INDEX(octree->mask, address);
+    uint32_t child_start = *PTR_INDEX(octree->addr, address);
+    
+    Depth min_depth = z_to_depth(batcher, batcher->frustum_bounds.min_z);
+    Depth max_depth = z_to_depth(batcher, batcher->frustum_bounds.max_z);
+    
+    goto grid_initialized;
+    
+    do {
+        {
+            // Pop an entry from the stack
+            if (stack->count == 0) {
+                stack--;
+                continue;
+            }
+            stack->count--;
+            child_start = stack->subnodes[stack->count];
+            mask = stack->masks[stack->count];
+            SInt octant = stack->octants[stack->count];
+            address = stack->node + octant;
+            
+            position.x = stack->center.x + stack->deltas[octant].x;
+            position.y = stack->center.y + stack->deltas[octant].y;
+            position.z = stack->center.z + stack->deltas[octant].z;
+        }
+        
+        grid_initialized:;
+        
+        Depth depth = position.z - stack->extent_z;
+        
+        if (depth >= max_depth) continue;
+        
+        SInt intersects_near_plane = (depth < min_depth);
+        
+        if (intersects_near_plane) {
+            if ((!mask) | (stack->level == effects.max_level)) continue;
+        }
+        
+        // Calculate screen-space bounds (in pixels)
+        Rect rect;
+        rect.min_x = COORD_TO_PIXEL(position.x - stack->extent_x);
+        rect.max_x = COORD_TO_PIXEL(position.x + stack->extent_x);
+        rect.min_y = COORD_TO_PIXEL(position.y - stack->extent_y);
+        rect.max_y = COORD_TO_PIXEL(position.y + stack->extent_y);
+        
+        SInt size_x = rect.max_x - rect.min_x;
+        SInt size_y = rect.max_y - rect.min_y;
+        SInt size_max = MAX(size_x, size_y);
+        
+        // Clamp to viewport
+        RECT_CLIP(rect, stack->rect);
+        
+        // Skip if not visible
+        if ((rect.min_x > rect.max_x) | (rect.min_y > rect.max_y)) continue;
+        
+        // Calculate node size (in pixels)
+        SInt is_pixel = (size_max == 0);
+        SInt is_splat = (!mask) | (stack->level == effects.max_level);
+        
+        if (intersects_near_plane) {
+            if (is_pixel | is_splat) continue;
+        } else {
+            #ifdef DMIR_USE_SPLAT_PIXEL
+            // Splat if size is 1 pixel
+            if (is_pixel) {
+                splat_pixel(framebuffer, rect.min_x, rect.min_y, position.z, affine_id, address, octree);
+                continue;
+            }
+            #else
+            is_splat |= is_pixel;
+            #endif
+            
+            // Splat if this is a leaf node or reached max displayed level
+            if (is_splat) {
+                for (SInt y = rect.min_y; y <= rect.max_y; y++) {
+                    for (SInt x = rect.min_x; x <= rect.max_x; x++) {
+                        splat_pixel(framebuffer, x, y, position.z, affine_id, address, octree);
+                    }
+                }
+                continue;
+            }
+            
+            // Do an occlusion check
+            if (is_occluded_quad(framebuffer, rect, depth)) continue;
+        }
+        
+        // Push non-empty children on the stack
+        stack++;
+        stack->node = child_start;
+        stack->count = 0;
+        stack->rect = rect;
+        stack->center = position;
+        
+        for (SInt i = 0; i < 8; i++) {
+            SInt octant = starting_octant ^ i;
+            if ((mask & (1 << octant)) == 0) continue;
+            
+            stack->octants[stack->count] = octant;
+            stack->subnodes[stack->count] = *PTR_INDEX(octree->addr, child_start+octant);
+            stack->masks[stack->count] = *PTR_INDEX(octree->mask, child_start+octant);
+            stack->count++;
+        }
+    } while (stack > stack_start);
+}
+
 ///////////////////////////////////////////
 // Public API and some related functions //
 ///////////////////////////////////////////
@@ -527,6 +844,7 @@ Batcher* dmir_batcher_make() {
         
         batcher->api.split_factor = 0.125f;
         batcher->api.affine_distortion = 1;
+        batcher->api.ortho_distortion = 1;
         
         dmir_batcher_reset((Batcher*)batcher, DMIR_RECT_EMPTY, DMIR_FRUSTUM_DEFAULT);
     }
@@ -968,6 +1286,7 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher, Framebuff
         } else {
             Depth depth = z_to_depth(batcher, bounds.min_z);
             
+            #ifndef DMIR_USE_ORTHO
             #ifdef DMIR_USE_SPLAT_PIXEL
             // Splat if size is 1 pixel
             if (is_pixel) {
@@ -987,6 +1306,7 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher, Framebuff
                 }
                 continue;
             }
+            #endif
             
             // Do an occlusion check
             if (is_occluded_quad(framebuffer, rect, depth)) continue;
@@ -995,6 +1315,26 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher, Framebuff
         // Calculate the remaining (non-corner) vertices
         // This is also required for calculating matrix axes and starting octant
         calculate_midpoints(stack->grid, batcher);
+        
+        #ifdef DMIR_USE_ORTHO
+        SInt is_subtree = is_pixel | is_splat;
+        float projection_distortion = 0;
+        if (!intersects_eye_plane) {
+            projection_distortion = calculate_projection_distortion(stack->grid);
+            is_subtree |= (projection_distortion < batcher->api.ortho_distortion);
+        }
+        
+        if (is_subtree) {
+            Effects sub_effects = effects;
+            sub_effects.max_level -= stack->level;
+            sub_effects.dilation_abs += projection_distortion * 0.5f;
+            sub_effects.dilation_rel *= (1 << stack->level);
+            
+            render_ortho(renderer, batcher, framebuffer, affine_id, octree, address, sub_effects,
+                stack->grid, (OrthoStackItem*)(stack+1));
+            continue;
+        }
+        #endif
         
         // Calculate the starting octant
         SInt starting_octant;
