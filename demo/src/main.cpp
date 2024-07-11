@@ -95,6 +95,7 @@ DMirOctree* load_octree(std::string path, int mode) {
     if ((file_data == nullptr) || (file_size < 8*node_size)) return nullptr;
     
     DMirOctree* octree = new DMirOctree();
+    octree->max_level = -1;
     octree->is_packed = false;
     octree->count = file_size / node_size;
     octree->addr = (uint32_t*)file_data;
@@ -169,6 +170,7 @@ DMirOctree* make_recursive_cube(int r, int g, int b) {
     }
     
     DMirOctree* octree = new DMirOctree();
+    octree->max_level = -1;
     octree->is_packed = false;
     octree->count = 8;
     octree->addr = octree_data;

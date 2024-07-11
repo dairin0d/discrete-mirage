@@ -75,6 +75,7 @@ typedef struct DMirOctree {
     uint32_t mask_stride;
     uint32_t data_stride;
     uint32_t count;
+    uint32_t max_level;
     DMirBool is_packed;
 } DMirOctree;
 
