@@ -108,6 +108,7 @@ typedef struct DMirFramebuffer {
 typedef struct DMirBatcher {
     DMirRect viewport;
     DMirFrustum frustum;
+    uint32_t sort_tiles_shift;
     float split_factor;
     float affine_distortion;
     float ortho_distortion;

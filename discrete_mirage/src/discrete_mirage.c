@@ -166,13 +166,9 @@ typedef struct Fragment {
     uint32_t address;
 } Fragment;
 
-typedef struct Subtree {
-    uint32_t affine_id;
-    ProjectedVertex cage[CAGE_SIZE];
-    uint32_t address;
-    Effects effects;
-    Bounds bounds;
-} Subtree;
+#define REF_UPDATE(pointer, delta) {\
+    if (pointer != NULL) pointer = (typeof(pointer))((uint8_t*)(pointer) + (delta));\
+}
 
 #ifdef DMIR_ROW_POW2
 #define PIXEL_INDEX(buf, x, y) ((x) + ((y) << (buf)->row_shift))
@@ -296,6 +292,98 @@ void lookups_free(Lookups* lookups) {
     free(lookups);
 }
 
+///////////////////////
+// Subtree & sorting //
+///////////////////////
+
+typedef struct Subtree Subtree;
+typedef struct ListItem ListItem;
+
+typedef struct ListItem {
+    ListItem* next;
+    Subtree* subtree;
+} ListItem;
+
+typedef struct LinkedList {
+    ListItem* head;
+    ListItem* tail;
+} LinkedList;
+
+typedef struct Subtree {
+    uint32_t affine_id;
+    ProjectedVertex cage[CAGE_SIZE];
+    uint32_t address;
+    Effects effects;
+    Bounds bounds;
+    Rect rect;
+    int32_t visited;
+    LinkedList links;
+    Subtree* next;
+} Subtree;
+
+void linked_list_add(LinkedList* list, ListItem* item) {
+    if (list->head == NULL) {
+        list->head = item;
+        list->tail = item;
+    } else {
+        list->tail->next = item;
+        list->tail = item;
+    }
+    item->next = NULL;
+}
+
+ListItem* linked_list_skip(ListItem* head, SInt k, SInt* count) {
+    *count = 0;
+    while ((head != NULL) & (*count != k)) {
+        (*count)++;
+        head = head->next;
+    }
+    return head;
+}
+
+void linked_list_sort(LinkedList* list) {
+    if (list->head == NULL) return;
+    
+    // Inspired by https://www.chiark.greenend.org.uk/~sgtatham/algorithms/listsort.html
+    for (SInt k = 1, merges = 0; merges != 1; k *= 2) {
+        merges = 0;
+        ListItem* p = list->head;
+        list->head = NULL;
+        list->tail = NULL;
+        
+        while (p != NULL) {
+            SInt psize;
+            ListItem* q = linked_list_skip(p, k, &psize);
+            SInt qsize = k;
+            
+            while ((psize > 0) | ((qsize > 0) & (q != NULL))) {
+                SInt use_p;
+                if ((psize > 0) & (qsize > 0) & (q != NULL)) {
+                    use_p = ((p->subtree->bounds.min_z - q->subtree->bounds.min_z) <= 0);
+                } else {
+                    use_p = (psize > 0);
+                }
+                
+                ListItem* e;
+                if (use_p) {
+                    e = p;
+                    p = p->next;
+                    psize--;
+                } else {
+                    e = q;
+                    q = q->next;
+                    qsize--;
+                }
+                
+                linked_list_add(list, e);
+            }
+            
+            merges++;
+            p = q;
+        }
+    }
+}
+
 /////////////////////////////////////
 // Rendering-related functionality //
 /////////////////////////////////////
@@ -305,13 +393,21 @@ typedef struct BatcherInternal {
     Lookups* lookups;
     AffineInfo* affine;
     Subtree* subtrees;
-    Subtree** sorted;
+    ListItem* sort_items;
+    LinkedList* sort_tiles;
     GridStackItem* stack;
+    Subtree* sorted_head;
     SInt affine_size;
     SInt subtrees_size;
+    SInt sort_items_size;
+    SInt sort_tiles_size;
+    SInt sort_tiles_shift;
+    SInt sort_tiles_size_x;
+    SInt sort_tiles_size_y;
     SInt affine_count;
     SInt subtrees_count;
-    SInt renderable_count;
+    SInt sort_items_count;
+    SInt sort_tiles_count;
     float scale_xy;
     float scale_c;
     float scale_z;
@@ -1063,15 +1159,21 @@ Batcher* dmir_batcher_make() {
     if (batcher) {
         batcher->lookups = lookups_make();
         
-        batcher->affine_size = 1024;
+        batcher->affine_size = 1 << 10;
         batcher->affine = malloc(batcher->affine_size * sizeof(AffineInfo));
         
-        batcher->subtrees_size = 2048;
+        batcher->subtrees_size = 1 << 12;
         batcher->subtrees = malloc(batcher->subtrees_size * sizeof(Subtree));
-        batcher->sorted = malloc(batcher->subtrees_size * sizeof(Subtree*));
+        
+        batcher->sort_items_size = 1 << 14;
+        batcher->sort_items = malloc(batcher->sort_items_size * sizeof(ListItem));
+        
+        batcher->sort_tiles_size = 1 << 10;
+        batcher->sort_tiles = malloc(batcher->sort_tiles_size * sizeof(LinkedList));
         
         batcher->stack = malloc(MAX_STACK_DEPTH * sizeof(GridStackItem));
         
+        batcher->api.sort_tiles_shift = 6;
         batcher->api.split_factor = 0.125f;
         batcher->api.affine_distortion = 1;
         batcher->api.ortho_distortion = 1;
@@ -1090,11 +1192,25 @@ void dmir_batcher_free(Batcher* batcher_ptr) {
     if (batcher->affine) free(batcher->affine);
     
     if (batcher->subtrees) free(batcher->subtrees);
-    if (batcher->sorted) free(batcher->sorted);
+    
+    if (batcher->sort_items) free(batcher->sort_items);
+    
+    if (batcher->sort_tiles) free(batcher->sort_tiles);
     
     if (batcher->stack) free(batcher->stack);
     
     free(batcher);
+}
+
+void batcher_sorting_reset(BatcherInternal* batcher) {
+    batcher->sorted_head = NULL;
+    
+    batcher->sort_items_count = 0;
+    
+    for (SInt i = 0; i < batcher->sort_tiles_count; i++) {
+        batcher->sort_tiles[i].head = NULL;
+        batcher->sort_tiles[i].tail = NULL;
+    }
 }
 
 void dmir_batcher_reset(Batcher* batcher_ptr, Rect viewport, Frustum frustum) {
@@ -1102,7 +1218,6 @@ void dmir_batcher_reset(Batcher* batcher_ptr, Rect viewport, Frustum frustum) {
     
     batcher->affine_count = 0;
     batcher->subtrees_count = 0;
-    batcher->renderable_count = 0;
     
     batcher->api.viewport = viewport;
     batcher->api.frustum = frustum;
@@ -1161,6 +1276,19 @@ void dmir_batcher_reset(Batcher* batcher_ptr, Rect viewport, Frustum frustum) {
         batcher->frustum_bounds.min_z = frustum.min_depth;
         batcher->frustum_bounds.max_z = frustum.max_depth;
     }
+    
+    batcher->sort_tiles_shift = MIN(batcher->api.sort_tiles_shift, 16);
+    SInt sort_tile_size = 1 << batcher->sort_tiles_shift;
+    batcher->sort_tiles_size_x = (viewport_size_x + sort_tile_size-1) >> batcher->sort_tiles_shift;
+    batcher->sort_tiles_size_y = (viewport_size_y + sort_tile_size-1) >> batcher->sort_tiles_shift;
+    batcher->sort_tiles_count = batcher->sort_tiles_size_x * batcher->sort_tiles_size_y;
+    
+    if (batcher->sort_tiles_count > batcher->sort_tiles_size) {
+        batcher->sort_tiles_size = 1 << pow2_ceil(batcher->sort_tiles_count);
+        batcher->sort_tiles = realloc(batcher->sort_tiles, batcher->sort_tiles_size * sizeof(LinkedList));
+    }
+    
+    batcher_sorting_reset(batcher);
 }
 
 SInt batcher_add_affine(BatcherInternal* batcher,
@@ -1184,21 +1312,94 @@ SInt batcher_add_affine(BatcherInternal* batcher,
 
 Subtree* batcher_add_subtree(BatcherInternal* batcher) {
     if (batcher->subtrees_count == batcher->subtrees_size) {
-        void* subtrees_start = batcher->subtrees;
+        void* start = batcher->subtrees;
         batcher->subtrees_size *= 2;
         batcher->subtrees = realloc(batcher->subtrees, batcher->subtrees_size * sizeof(Subtree));
-        batcher->sorted = realloc(batcher->sorted, batcher->subtrees_size * sizeof(Subtree*));
-        // Since sorted stores pointers, we need to re-point them to the new subtrees array
-        void** sorted = (void**)batcher->sorted;
-        void** sorted_end = (void**)(batcher->sorted + batcher->subtrees_count);
-        for (; sorted != sorted_end; sorted++) {
-            *sorted = (void*)batcher->subtrees + ((*sorted) - subtrees_start);
+        size_t delta = (void*)batcher->subtrees - start;
+        
+        for (SInt i = 0; i < batcher->sort_items_count; i++) {
+            REF_UPDATE(batcher->sort_items[i].subtree, delta);
         }
     }
+    
     Subtree* subtree = batcher->subtrees + batcher->subtrees_count;
-    batcher->sorted[batcher->subtrees_count] = subtree;
+    subtree->links.head = NULL;
+    subtree->links.tail = NULL;
+    subtree->next = NULL;
+    subtree->visited = FALSE;
     batcher->subtrees_count++;
     return subtree;
+}
+
+ListItem* batcher_add_sort_item(BatcherInternal* batcher, Subtree* subtree) {
+    if (batcher->sort_items_count == batcher->sort_items_size) {
+        void* start = batcher->sort_items;
+        batcher->sort_items_size *= 2;
+        batcher->sort_items = realloc(batcher->sort_items, batcher->sort_items_size * sizeof(ListItem));
+        size_t delta = (void*)batcher->sort_items - start;
+        
+        for (SInt i = 0; i < batcher->sort_items_count; i++) {
+            REF_UPDATE(batcher->sort_items[i].next, delta);
+        }
+        
+        for (SInt i = 0; i < batcher->subtrees_count; i++) {
+            REF_UPDATE(batcher->subtrees[i].links.head, delta);
+            REF_UPDATE(batcher->subtrees[i].links.tail, delta);
+        }
+        
+        for (SInt i = 0; i < batcher->sort_tiles_count; i++) {
+            REF_UPDATE(batcher->sort_tiles[i].head, delta);
+            REF_UPDATE(batcher->sort_tiles[i].tail, delta);
+        }
+    }
+    
+    ListItem* sort_item = batcher->sort_items + batcher->sort_items_count;
+    sort_item->subtree = subtree;
+    sort_item->next = NULL;
+    batcher->sort_items_count++;
+    
+    return sort_item;
+}
+
+void batcher_subtree_add_link(BatcherInternal* batcher, Subtree* subtree, Subtree* next) {
+    // Ideally, all links should be unique, but we at least can
+    // skip adding a link if the last one has the same subtree
+    if (subtree->links.tail != NULL) {
+        if (subtree->links.tail->subtree == next) return;
+    }
+    
+    linked_list_add(&subtree->links, batcher_add_sort_item(batcher, next));
+}
+
+void batcher_link_subtree(BatcherInternal* batcher, Subtree* subtree) {
+    // subtree rect is expected to already be clipped to viewport
+    SInt min_tx = subtree->rect.min_x >> batcher->sort_tiles_shift;
+    SInt min_ty = subtree->rect.min_y >> batcher->sort_tiles_shift;
+    SInt max_tx = subtree->rect.max_x >> batcher->sort_tiles_shift;
+    SInt max_ty = subtree->rect.max_y >> batcher->sort_tiles_shift;
+    
+    // if (batcher->subtrees_count > 1) {
+    //     Subtree* prev_subtree = batcher->subtrees + (batcher->subtrees_count-2);
+    //     if (prev_subtree->affine_id == subtree->affine_id) {
+    //         batcher_subtree_add_link(batcher, prev_subtree, subtree);
+    //     }
+    // }
+    
+    for (SInt ty = min_ty; ty <= max_ty; ty++) {
+        LinkedList* sort_tiles_row = batcher->sort_tiles + (ty * batcher->sort_tiles_size_x);
+        for (SInt tx = min_tx; tx <= max_tx; tx++) {
+            LinkedList* sort_tile = sort_tiles_row + tx;
+            
+            // if (sort_tile->tail != NULL) {
+            //     Subtree* prev_subtree = sort_tile->tail->subtree;
+            //     if (prev_subtree->affine_id == subtree->affine_id) {
+            //         batcher_subtree_add_link(batcher, prev_subtree, subtree);
+            //     }
+            // }
+            
+            linked_list_add(sort_tile, batcher_add_sort_item(batcher, subtree));
+        }
+    }
 }
 
 void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer,
@@ -1355,11 +1556,13 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer,
                 Subtree* subtree = batcher_add_subtree(batcher);
                 subtree->affine_id = stack->affine_id;
                 subtree->bounds = bounds;
+                subtree->rect = rect;
                 cage_from_grid(stack->grid, subtree->cage);
                 subtree->address = address;
                 subtree->effects = effects;
                 subtree->effects.max_level -= stack->level;
                 subtree->effects.dilation_rel *= (1 << stack->level);
+                batcher_link_subtree(batcher, subtree);
                 
                 RECT_EXPAND(batcher->api.rect, rect);
                 continue;
@@ -1398,32 +1601,45 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer,
     } while (stack > stack_start);
 }
 
-// qsort's callback signature expents int specifically
-int subtree_compare(const void *a, const void *b) {
-    const Subtree* subtree_a = *(const Subtree**)a;
-    const Subtree* subtree_b = *(const Subtree**)b;
-    // qsort expects only {-1, 0, 1}, so we can't just cast a difference to int
-    // Basic depth sorting seems to work well even for nodes of the same octree?
-    // if (subtree_a->affine_id == subtree_b->affine_id) {
-    //     // Pointer addresses have the same order as octree traversal
-    //     if (subtree_a < subtree_b) return -1;
-    //     if (subtree_a > subtree_b) return 1;
-    //     return 0;
-    // }
-    if (subtree_a->bounds.min_z < subtree_b->bounds.min_z) return -1;
-    if (subtree_a->bounds.min_z > subtree_b->bounds.min_z) return 1;
-    return 0;
+void batcher_topological_sort(BatcherInternal* batcher, Subtree* subtree) {
+    if (subtree->visited) return;
+    subtree->visited = TRUE;
+    
+    for (ListItem* item = subtree->links.head; item != NULL; item = item->next) {
+        batcher_topological_sort(batcher, item->subtree);
+    }
+    
+    subtree->next = batcher->sorted_head;
+    batcher->sorted_head = subtree;
 }
 
 void dmir_batcher_sort(Batcher* batcher_ptr) {
     BatcherInternal* batcher = (BatcherInternal*)batcher_ptr;
     
-    // TODO: use timsort? (probably better for our use-case)
-    // Or: topological sort of bucketed/tiled nodes?
-    qsort(batcher->sorted, batcher->subtrees_count, sizeof(Subtree*), subtree_compare);
+    for (SInt i = 0; i < batcher->sort_tiles_count; i++) {
+        LinkedList* sort_tile = batcher->sort_tiles + i;
+        linked_list_sort(sort_tile);
+        
+        ListItem* prev = NULL;
+        for (ListItem* item = sort_tile->head; item != NULL; prev = item, item = item->next) {
+            if (prev == NULL) continue;
+            // if (prev->subtree->affine_id == item->subtree->affine_id) continue;
+            SInt dx0 = item->subtree->rect.max_x - prev->subtree->rect.min_x;
+            SInt dx1 = prev->subtree->rect.max_x - item->subtree->rect.min_x;
+            SInt dy0 = item->subtree->rect.max_y - prev->subtree->rect.min_y;
+            SInt dy1 = prev->subtree->rect.max_y - item->subtree->rect.min_y;
+            // if ((dx0|dx1|dy0|dy1) < 0) continue;
+            batcher_subtree_add_link(batcher, prev->subtree, item->subtree);
+        }
+    }
     
-    // Current batch is finished and can only be rendered
-    batcher->renderable_count = batcher->subtrees_count;
+    // Do this after building a graph, but before topological sort
+    batcher_sorting_reset(batcher);
+    
+    for (SInt index = 0; index < batcher->subtrees_count; index++) {
+        batcher_topological_sort(batcher, &batcher->subtrees[index]);
+    }
+    
     batcher->subtrees_count = 0;
 }
 
@@ -1657,7 +1873,7 @@ void dmir_renderer_draw(Renderer* renderer_ptr) {
         renderer->fragments = realloc(renderer->fragments, renderer->fragments_size);
     }
     
-    for (SInt index = 0; index < batcher->renderable_count; index++) {
-        render_cage(renderer, batcher, framebuffer, batcher->sorted[index]);
+    for (Subtree* subtree = batcher->sorted_head; subtree != NULL; subtree = subtree->next) {
+        render_cage(renderer, batcher, framebuffer, subtree);
     }
 }
