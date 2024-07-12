@@ -1109,32 +1109,58 @@ void dmir_batcher_reset(Batcher* batcher_ptr, Rect viewport, Frustum frustum) {
     
     batcher->api.rect = DMIR_RECT_EMPTY;
     
-    float half_x = (viewport.max_x - viewport.min_x + 1) * 0.5f;
-    float half_y = (viewport.max_y - viewport.min_y + 1) * 0.5f;
-    
-    batcher->scale_xy = ((half_x > half_y) ? half_x : half_y) / frustum.focal_extent;
-    batcher->scale_c = 1 - frustum.perspective;
-    batcher->scale_z = frustum.perspective / frustum.focal_depth;
-    
-    batcher->offset_x = viewport.min_x + half_x;
-    batcher->offset_y = viewport.min_y + half_y;
-    
     #ifdef DMIR_DEPTH_INT32
     batcher->depth_factor = DMIR_MAX_DEPTH / (frustum.max_depth - frustum.min_depth);
     #else
     batcher->depth_factor = 1.0f;
     #endif
     
-    batcher->eye_z = -batcher->scale_c / batcher->scale_z;
-    batcher->is_perspective = (batcher->scale_z > 1e-16f) | (batcher->scale_z < -1e-16f);
-    batcher->clamp_z = batcher->eye_z + MAX(-batcher->eye_z, 1) * 1e-8f;
+    SInt viewport_size_x = 0;
+    SInt viewport_size_y = 0;
     
-    batcher->frustum_bounds.min_x = viewport.min_x;
-    batcher->frustum_bounds.max_x = viewport.max_x + 1;
-    batcher->frustum_bounds.min_y = viewport.min_y;
-    batcher->frustum_bounds.max_y = viewport.max_y + 1;
-    batcher->frustum_bounds.min_z = MAX(frustum.min_depth, batcher->eye_z);
-    batcher->frustum_bounds.max_z = frustum.max_depth;
+    if ((viewport.max_x >= viewport.min_x) & (viewport.max_y >= viewport.min_y)) {
+        viewport_size_x = viewport.max_x - viewport.min_x + 1;
+        viewport_size_y = viewport.max_y - viewport.min_y + 1;
+        
+        float half_x = viewport_size_x * 0.5f;
+        float half_y = viewport_size_y * 0.5f;
+        
+        batcher->scale_xy = ((half_x > half_y) ? half_x : half_y) / frustum.focal_extent;
+        batcher->scale_c = 1 - frustum.perspective;
+        batcher->scale_z = frustum.perspective / frustum.focal_depth;
+        
+        batcher->offset_x = viewport.min_x + half_x;
+        batcher->offset_y = viewport.min_y + half_y;
+        
+        batcher->eye_z = -batcher->scale_c / batcher->scale_z;
+        batcher->is_perspective = (batcher->scale_z > 1e-16f) | (batcher->scale_z < -1e-16f);
+        batcher->clamp_z = batcher->eye_z + MAX(-batcher->eye_z, 1) * 1e-8f;
+        
+        batcher->frustum_bounds.min_x = viewport.min_x;
+        batcher->frustum_bounds.max_x = viewport.max_x + 1;
+        batcher->frustum_bounds.min_y = viewport.min_y;
+        batcher->frustum_bounds.max_y = viewport.max_y + 1;
+        batcher->frustum_bounds.min_z = MAX(frustum.min_depth, batcher->eye_z);
+        batcher->frustum_bounds.max_z = frustum.max_depth;
+    } else {
+        batcher->scale_xy = 0;
+        batcher->scale_c = 1;
+        batcher->scale_z = 0;
+        
+        batcher->offset_x = 0;
+        batcher->offset_y = 1;
+        
+        batcher->eye_z = 0;
+        batcher->is_perspective = FALSE;
+        batcher->clamp_z = 0;
+        
+        batcher->frustum_bounds.min_x = 0;
+        batcher->frustum_bounds.max_x = -1;
+        batcher->frustum_bounds.min_y = 0;
+        batcher->frustum_bounds.max_y = -1;
+        batcher->frustum_bounds.min_z = frustum.min_depth;
+        batcher->frustum_bounds.max_z = frustum.max_depth;
+    }
 }
 
 SInt batcher_add_affine(BatcherInternal* batcher,
