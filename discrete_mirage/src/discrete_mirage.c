@@ -29,9 +29,11 @@
 #ifdef DMIR_MINMAX_IF
 #define MIN_UPDATE(var, value) if ((value) < var) var = (value);
 #define MAX_UPDATE(var, value) if ((value) > var) var = (value);
+#define ABS_UPDATE(var) if (var < 0) var = -var;
 #else
 #define MIN_UPDATE(var, value) var = ((value) < var ? (value) : var);
 #define MAX_UPDATE(var, value) var = ((value) > var ? (value) : var);
+#define ABS_UPDATE(var) var = (var < 0 ? -var : var);
 #endif
 
 #define PTR_OFFSET(array, offset) ((typeof(array))(((char*)(array)) + (offset)))
@@ -509,6 +511,18 @@ SInt calculate_octant_order(Vector3S* matrix) {
     Depth xz = ABS(matrix[0].z);
     Depth yz = ABS(matrix[1].z);
     Depth zz = ABS(matrix[2].z);
+    return (xz <= yz
+        ? (xz <= zz ? (yz <= zz ? XYZ : XZY) : ZXY)
+        : (yz <= zz ? (xz <= zz ? YXZ : YZX) : ZYX));
+}
+
+SInt calculate_octant_order_grid(ProjectedVertex* grid) {
+    float xz = GRID_AXIS(grid, 1, 0, 0, position.z);
+    ABS_UPDATE(xz);
+    float yz = GRID_AXIS(grid, 0, 1, 0, position.z);
+    ABS_UPDATE(yz);
+    float zz = GRID_AXIS(grid, 0, 0, 1, position.z);
+    ABS_UPDATE(zz);
     return (xz <= yz
         ? (xz <= zz ? (yz <= zz ? XYZ : XZY) : ZXY)
         : (yz <= zz ? (xz <= zz ? YXZ : YZX) : ZYX));
@@ -1333,7 +1347,10 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer,
         } else {
             starting_octant = calculate_starting_octant(stack->grid);
         }
-        starting_octant = (~starting_octant) & 7; // opposite (reverse order)
+        
+        SInt octant_order = calculate_octant_order_grid(stack->grid);
+        
+        Queue* queues_reverse = queues + (((octant_order << 3) | (starting_octant ^ 0b111)) << 8);
         
         // Push non-empty children on the stack
         stack++;
@@ -1343,7 +1360,7 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer,
         stack->is_behind = intersects_eye_plane;
         stack->affine_id = (stack-1)->affine_id;
         
-        Queue queue = (queues + (starting_octant << 8))[mask];
+        Queue queue = queues_reverse[mask];
         for (; queue.indices != 0; queue.indices >>= 4, queue.octants >>= 4) {
             address = child_start + (queue.indices & 7);
             stack->octants[stack->count] = (queue.octants & 7);
@@ -1577,7 +1594,10 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher, Framebuff
         } else {
             starting_octant = calculate_starting_octant(stack->grid);
         }
-        starting_octant = (~starting_octant) & 7; // opposite (reverse order)
+        
+        SInt octant_order = calculate_octant_order_grid(stack->grid);
+        
+        Queue* queues_reverse = queues + (((octant_order << 3) | (starting_octant ^ 0b111)) << 8);
         
         // Push non-empty children on the stack
         stack++;
@@ -1586,7 +1606,7 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher, Framebuff
         stack->rect = rect;
         stack->is_behind = intersects_eye_plane;
         
-        Queue queue = (queues + (starting_octant << 8))[mask];
+        Queue queue = queues_reverse[mask];
         for (; queue.indices != 0; queue.indices >>= 4, queue.octants >>= 4) {
             address = child_start + (queue.indices & 7);
             stack->octants[stack->count] = (queue.octants & 7);
