@@ -4,7 +4,6 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <stdio.h>
 
 #include "discrete_mirage.h"
 
@@ -172,6 +171,7 @@ typedef struct Subtree {
     uint32_t address;
     Effects effects;
     Bounds bounds;
+    SInt next;
 } Subtree;
 
 #ifdef DMIR_ROW_POW2
@@ -305,13 +305,12 @@ typedef struct BatcherInternal {
     Lookups* lookups;
     AffineInfo* affine;
     Subtree* subtrees;
-    Subtree** sorted;
     GridStackItem* stack;
     SInt affine_size;
     SInt subtrees_size;
     SInt affine_count;
     SInt subtrees_count;
-    SInt renderable_count;
+    SInt sorted_head;
     float scale_xy;
     float scale_c;
     float scale_z;
@@ -1068,7 +1067,6 @@ Batcher* dmir_batcher_make() {
         
         batcher->subtrees_size = 2048;
         batcher->subtrees = malloc(batcher->subtrees_size * sizeof(Subtree));
-        batcher->sorted = malloc(batcher->subtrees_size * sizeof(Subtree*));
         
         batcher->stack = malloc(MAX_STACK_DEPTH * sizeof(GridStackItem));
         
@@ -1090,7 +1088,6 @@ void dmir_batcher_free(Batcher* batcher_ptr) {
     if (batcher->affine) free(batcher->affine);
     
     if (batcher->subtrees) free(batcher->subtrees);
-    if (batcher->sorted) free(batcher->sorted);
     
     if (batcher->stack) free(batcher->stack);
     
@@ -1102,7 +1099,7 @@ void dmir_batcher_reset(Batcher* batcher_ptr, Rect viewport, Frustum frustum) {
     
     batcher->affine_count = 0;
     batcher->subtrees_count = 0;
-    batcher->renderable_count = 0;
+    batcher->sorted_head = -1;
     
     batcher->api.viewport = viewport;
     batcher->api.frustum = frustum;
@@ -1184,19 +1181,12 @@ SInt batcher_add_affine(BatcherInternal* batcher,
 
 Subtree* batcher_add_subtree(BatcherInternal* batcher) {
     if (batcher->subtrees_count == batcher->subtrees_size) {
-        void* subtrees_start = batcher->subtrees;
         batcher->subtrees_size *= 2;
         batcher->subtrees = realloc(batcher->subtrees, batcher->subtrees_size * sizeof(Subtree));
-        batcher->sorted = realloc(batcher->sorted, batcher->subtrees_size * sizeof(Subtree*));
-        // Since sorted stores pointers, we need to re-point them to the new subtrees array
-        void** sorted = (void**)batcher->sorted;
-        void** sorted_end = (void**)(batcher->sorted + batcher->subtrees_count);
-        for (; sorted != sorted_end; sorted++) {
-            *sorted = (void*)batcher->subtrees + ((*sorted) - subtrees_start);
-        }
     }
+    
     Subtree* subtree = batcher->subtrees + batcher->subtrees_count;
-    batcher->sorted[batcher->subtrees_count] = subtree;
+    subtree->next = -1;
     batcher->subtrees_count++;
     return subtree;
 }
@@ -1398,32 +1388,74 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer,
     } while (stack > stack_start);
 }
 
-// qsort's callback signature expents int specifically
-int subtree_compare(const void *a, const void *b) {
-    const Subtree* subtree_a = *(const Subtree**)a;
-    const Subtree* subtree_b = *(const Subtree**)b;
-    // qsort expects only {-1, 0, 1}, so we can't just cast a difference to int
-    // Basic depth sorting seems to work well even for nodes of the same octree?
-    // if (subtree_a->affine_id == subtree_b->affine_id) {
-    //     // Pointer addresses have the same order as octree traversal
-    //     if (subtree_a < subtree_b) return -1;
-    //     if (subtree_a > subtree_b) return 1;
-    //     return 0;
-    // }
-    if (subtree_a->bounds.min_z < subtree_b->bounds.min_z) return -1;
-    if (subtree_a->bounds.min_z > subtree_b->bounds.min_z) return 1;
-    return 0;
-}
-
 void dmir_batcher_sort(Batcher* batcher_ptr) {
     BatcherInternal* batcher = (BatcherInternal*)batcher_ptr;
     
-    // TODO: use timsort? (probably better for our use-case)
-    // Or: topological sort of bucketed/tiled nodes?
-    qsort(batcher->sorted, batcher->subtrees_count, sizeof(Subtree*), subtree_compare);
+    batcher->sorted_head = -1; // in case no subtrees were added in this pass
     
-    // Current batch is finished and can only be rendered
-    batcher->renderable_count = batcher->subtrees_count;
+    if (batcher->subtrees_count == 0) return;
+    
+    Subtree* subtrees = batcher->subtrees;
+    
+    for (SInt index = 1; index < batcher->subtrees_count; index++) {
+        subtrees[index-1].next = index;
+    }
+    subtrees[batcher->subtrees_count-1].next = -1;
+    
+    SInt head = 0;
+    SInt tail = batcher->subtrees_count - 1;
+    
+    // Inspired by https://www.chiark.greenend.org.uk/~sgtatham/algorithms/listsort.html
+    for (SInt k = 1, merges = 0; merges != 1; k *= 2) {
+        merges = 0;
+        SInt p = head;
+        head = -1;
+        tail = -1;
+        
+        while (p >= 0) {
+            SInt psize = 0;
+            SInt qsize = k;
+            SInt q = p;
+            while ((q >= 0) & (psize != k)) {
+                psize++;
+                q = subtrees[q].next;
+            }
+            
+            while ((psize > 0) | ((qsize > 0) & (q >= 0))) {
+                SInt use_p;
+                if ((psize > 0) & (qsize > 0) & (q >= 0)) {
+                    use_p = (subtrees[p].bounds.min_z <= subtrees[q].bounds.min_z);
+                } else {
+                    use_p = (psize > 0);
+                }
+                
+                SInt e;
+                if (use_p) {
+                    e = p;
+                    p = subtrees[p].next;
+                    psize--;
+                } else {
+                    e = q;
+                    q = subtrees[q].next;
+                    qsize--;
+                }
+                
+                if (head < 0) {
+                    head = e;
+                } else {
+                    subtrees[tail].next = e;
+                }
+                tail = e;
+                subtrees[tail].next = -1;
+            }
+            
+            merges++;
+            p = q;
+        }
+    }
+    
+    batcher->sorted_head = head;
+    
     batcher->subtrees_count = 0;
 }
 
@@ -1657,7 +1689,9 @@ void dmir_renderer_draw(Renderer* renderer_ptr) {
         renderer->fragments = realloc(renderer->fragments, renderer->fragments_size);
     }
     
-    for (SInt index = 0; index < batcher->renderable_count; index++) {
-        render_cage(renderer, batcher, framebuffer, batcher->sorted[index]);
+    Subtree* subtrees = batcher->subtrees;
+    
+    for (SInt index = batcher->sorted_head; index >= 0; index = subtrees[index].next) {
+        render_cage(renderer, batcher, framebuffer, &batcher->subtrees[index]);
     }
 }
