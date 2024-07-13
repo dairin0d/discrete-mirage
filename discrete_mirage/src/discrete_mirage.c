@@ -65,6 +65,7 @@ typedef int32_t Coord;
 #define SUBPIXEL_HALF (SUBPIXEL_SIZE >> 1)
 #define ORTHO_MAX_SUBDIVISIONS (31 - SUBPIXEL_BITS)
 #define ORTHO_LEVEL_LIMIT (28 - SUBPIXEL_BITS)
+#define ORTHO_MAX_SIZE (1 << ORTHO_LEVEL_LIMIT)
 #define COORD_TO_PIXEL(coord) ((coord) >> SUBPIXEL_BITS)
 #define PIXEL_TO_COORD(pixel) (((pixel) << SUBPIXEL_BITS) + SUBPIXEL_HALF)
 #define COORD_HALVE(coord) ((coord) >> 1)
@@ -74,6 +75,7 @@ typedef float Coord;
 #define SUBPIXEL_HALF 0.5f
 #define ORTHO_MAX_SUBDIVISIONS 31
 #define ORTHO_LEVEL_LIMIT 31
+#define ORTHO_MAX_SIZE INT32_MAX
 #define COORD_TO_PIXEL(coord) ((int32_t)(coord))
 #define PIXEL_TO_COORD(pixel) ((pixel) + 0.5f)
 #define COORD_HALVE(coord) ((coord) * 0.5f)
@@ -1224,7 +1226,8 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer,
     SInt viewport_size_x = viewport.max_x - viewport.min_x + 1;
     SInt viewport_size_y = viewport.max_y - viewport.min_y + 1;
     SInt viewport_size_max = MAX(viewport_size_x, viewport_size_y);
-    SInt max_subtree_size = CLAMP(batcher->api.split_factor, 0.0f, 1.0f) * viewport_size_max;
+    float split_size = batcher->api.split_factor * viewport_size_max;
+    SInt max_subtree_size = (SInt)CLAMP(split_size, 0, INT32_MAX);
     MAX_UPDATE(max_subtree_size, (SInt)(effects.dilation_abs * 2 + 1));
     
     uint32_t address = root;
@@ -1338,10 +1341,7 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer,
             // to be too big; besides being necessary for fixed-point arithmetic,
             // we also want to take advantage of pre-sorting to reduce overdraw.
             
-            SInt is_subtree = is_pixel | is_splat;
-            is_subtree |= (!intersects_near_plane) & (size_max < max_subtree_size);
-            
-            if (is_subtree) {
+            if (is_pixel | is_splat | (size_max < max_subtree_size)) {
                 Subtree* subtree = batcher_add_subtree(batcher);
                 subtree->affine_id = stack->affine_id;
                 subtree->bounds = bounds;
@@ -1628,7 +1628,7 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher, Framebuff
         #ifdef DMIR_USE_ORTHO
         SInt is_subtree = is_pixel | is_splat;
         float projection_distortion = 0;
-        if (!intersects_eye_plane) {
+        if ((!intersects_eye_plane) & (size_max < ORTHO_MAX_SIZE)) {
             projection_distortion = calculate_projection_distortion(stack->grid);
             is_subtree |= (projection_distortion < batcher->api.ortho_distortion);
         }
