@@ -1686,7 +1686,7 @@ void dmir_renderer_draw(Renderer* renderer_ptr) {
     SInt rect_area = size_x * size_y;
     if (rect_area > renderer->fragments_size) {
         renderer->fragments_size = 1 << pow2_ceil(rect_area);
-        renderer->fragments = realloc(renderer->fragments, renderer->fragments_size);
+        renderer->fragments = realloc(renderer->fragments, renderer->fragments_size * sizeof(Fragment));
     }
     
     Subtree* subtrees = batcher->subtrees;
