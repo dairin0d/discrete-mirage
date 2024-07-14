@@ -87,6 +87,105 @@ typedef float Coord;
 #define DEPTH_HALVE(depth) ((depth) * 0.5f)
 #endif
 
+#if DMIR_STENCIL_BITS == 16
+typedef uint16_t Stencil;
+#define STENCIL_CLEAR UINT16_MAX
+#define STENCIL_BITS 16
+#ifdef DMIR_STENCIL_1D
+#define STENCIL_SHIFT_X 4
+#define STENCIL_SHIFT_Y 0
+#define STENCIL_LUT_STEP_X 1
+#define STENCIL_LUT_STEP_Y 0
+#define STENCIL_LUT_MASK_X 1
+#define STENCIL_LUT_MASK_Y 0
+#else
+#define STENCIL_SHIFT_X 2
+#define STENCIL_SHIFT_Y 2
+#define STENCIL_LUT_STEP_X 1
+#define STENCIL_LUT_STEP_Y 4
+#define STENCIL_LUT_MASK_X 0x1111
+#define STENCIL_LUT_MASK_Y 0xF
+#endif
+#elif DMIR_STENCIL_BITS == 32
+typedef uint32_t Stencil;
+#define STENCIL_CLEAR UINT32_MAX
+#define STENCIL_BITS 32
+#ifdef DMIR_STENCIL_1D
+#define STENCIL_SHIFT_X 5
+#define STENCIL_SHIFT_Y 0
+#define STENCIL_LUT_STEP_X 1
+#define STENCIL_LUT_STEP_Y 0
+#define STENCIL_LUT_MASK_X 1
+#define STENCIL_LUT_MASK_Y 0
+#else
+#define STENCIL_SHIFT_X 3
+#define STENCIL_SHIFT_Y 2
+#define STENCIL_LUT_STEP_X 1
+#define STENCIL_LUT_STEP_Y 4
+#define STENCIL_LUT_MASK_X 0x01010101
+#define STENCIL_LUT_MASK_Y 0xFF
+#endif
+#elif DMIR_STENCIL_BITS == 64
+typedef uint64_t Stencil;
+#define STENCIL_CLEAR UINT64_MAX
+#define STENCIL_BITS 64
+#ifdef DMIR_STENCIL_1D
+#define STENCIL_SHIFT_X 6
+#define STENCIL_SHIFT_Y 0
+#define STENCIL_LUT_STEP_X 1
+#define STENCIL_LUT_STEP_Y 0
+#define STENCIL_LUT_MASK_X 1
+#define STENCIL_LUT_MASK_Y 0
+#else
+#define STENCIL_SHIFT_X 3
+#define STENCIL_SHIFT_Y 3
+#define STENCIL_LUT_STEP_X 1
+#define STENCIL_LUT_STEP_Y 8
+#define STENCIL_LUT_MASK_X 0x0101010101010101UL
+#define STENCIL_LUT_MASK_Y 0xFFUL
+#endif
+#else
+typedef uint32_t Stencil;
+#define STENCIL_CLEAR 0
+#define STENCIL_BITS 0
+#define STENCIL_SHIFT_X 0
+#define STENCIL_SHIFT_Y 0
+#define STENCIL_LUT_STEP_X 0
+#define STENCIL_LUT_STEP_Y 0
+#define STENCIL_LUT_MASK_X 0
+#define STENCIL_LUT_MASK_Y 0
+#endif
+
+#define STENCIL_SIZE_X (1 << STENCIL_SHIFT_X)
+#define STENCIL_SIZE_Y (1 << STENCIL_SHIFT_Y)
+#define STENCIL_MASK_X (STENCIL_SIZE_X - 1)
+#define STENCIL_MASK_Y (STENCIL_SIZE_Y - 1)
+#define STENCIL_AREA (STENCIL_SIZE_X * STENCIL_SIZE_Y)
+
+#define STENCIL_UPDATE_STENCIL (1 << 31)
+#define STENCIL_UPDATE_DEPTH (1 << 30)
+#define STENCIL_UPDATE_NEXT ((1 << 30) - 1)
+
+#define STENCIL_UPDATE_STENCIL_GET(tile) (\
+    (tile)->update & STENCIL_UPDATE_STENCIL\
+)
+#define STENCIL_UPDATE_DEPTH_GET(tile) (\
+    (tile)->update & STENCIL_UPDATE_DEPTH\
+)
+#define STENCIL_UPDATE_NEXT_GET(tile) (\
+    (tile)->update & STENCIL_UPDATE_NEXT\
+)
+
+#define STENCIL_UPDATE_STENCIL_SET(tile) {\
+    (tile)->update |= STENCIL_UPDATE_STENCIL;\
+}
+#define STENCIL_UPDATE_DEPTH_SET(tile) {\
+    (tile)->update |= STENCIL_UPDATE_DEPTH;\
+}
+#define STENCIL_UPDATE_NEXT_SET(tile, value) {\
+    (tile)->update = ((tile)->update & ~STENCIL_UPDATE_NEXT) | (value & STENCIL_UPDATE_NEXT);\
+}
+
 typedef DMirBool Bool;
 typedef DMirDepth Depth;
 typedef DMirColor Color;
@@ -131,6 +230,13 @@ typedef struct Bounds {
     float min_x, min_y, min_z;
     float max_x, max_y, max_z;
 } Bounds;
+
+typedef struct StencilTile {
+    Stencil self;
+    Stencil scene;
+    Depth depth;
+    uint32_t update;
+} StencilTile;
 
 typedef struct GridStackItem {
     ProjectedVertex grid[GRID_SIZE];
@@ -177,9 +283,9 @@ typedef struct Subtree {
 } Subtree;
 
 #ifdef DMIR_ROW_POW2
-#define PIXEL_INDEX(buf, x, y) ((x) + ((y) << (buf)->row_shift))
+#define PIXEL_INDEX(buf, x, y) ((x) + ((y) << (buf)->api.row_shift))
 #else
-#define PIXEL_INDEX(buf, x, y) ((x) + ((y) * (buf)->size_x))
+#define PIXEL_INDEX(buf, x, y) ((x) + ((y) * (buf)->api.size_x))
 #endif
 
 UInt pow2_ceil(UInt value) {
@@ -302,6 +408,16 @@ void lookups_free(Lookups* lookups) {
 // Rendering-related functionality //
 /////////////////////////////////////
 
+typedef struct FramebufferInternal {
+    Framebuffer api;
+    StencilTile* stencil_tiles;
+    Stencil* stencil_x_base;
+    Stencil* stencil_y_base;
+    Stencil* stencil_x;
+    Stencil* stencil_y;
+    SInt stencil_row_shift;
+} FramebufferInternal;
+
 typedef struct BatcherInternal {
     Batcher api;
     Lookups* lookups;
@@ -348,19 +464,49 @@ static inline Depth dz_to_depth(BatcherInternal* batcher, float dz) {
 }
 #endif
 
-static inline SInt is_occluded_quad(Framebuffer* framebuffer, Rect* rect, Depth depth) {
+static inline SInt is_occluded_quad(FramebufferInternal* framebuffer, Rect* rect, Depth depth) {
     #ifndef DMIR_USE_OCCLUSION
     return FALSE;
     #endif
+    
+    #if STENCIL_BITS > 0
+    SInt min_tx = rect->min_x & ~STENCIL_MASK_X;
+    SInt max_tx = rect->max_x & ~STENCIL_MASK_X;
+    SInt min_ty = rect->min_y & ~STENCIL_MASK_Y;
+    SInt max_ty = rect->max_y & ~STENCIL_MASK_Y;
+    SInt tile_col = min_tx >> STENCIL_SHIFT_X;
+    SInt tile_row = min_ty >> STENCIL_SHIFT_Y;
+    Stencil* stencil_x = framebuffer->stencil_x;
+    Stencil* stencil_y = framebuffer->stencil_y;
+    for (SInt ty = min_ty; ty <= max_ty; ty += STENCIL_SIZE_Y, tile_row++) {
+        StencilTile* tile = framebuffer->stencil_tiles +
+            (tile_col + (tile_row << framebuffer->stencil_row_shift));
+        for (SInt tx = min_tx; tx <= max_tx; tx += STENCIL_SIZE_X, tile++) {
+            Stencil pixel_mask = tile->self;
+            #ifdef DMIR_STENCIL_EXACT
+            pixel_mask &=
+                (stencil_x[rect->min_x - tx] ^ stencil_x[rect->max_x - tx + 1]) &
+                (stencil_y[rect->min_y - ty] ^ stencil_y[rect->max_y - ty + 1]);
+            #endif
+            if (depth >= tile->depth) pixel_mask &= tile->scene;
+            if (pixel_mask != 0) return FALSE;
+        }
+        #ifdef DMIR_SKIP_OCCLUDED_ROWS
+        rect->min_y = ty + STENCIL_SIZE_Y;
+        #endif
+    }
+    #else
     for (SInt y = rect->min_y; y <= rect->max_y; y++) {
         SInt row = PIXEL_INDEX(framebuffer, 0, y);
         for (SInt x = rect->min_x; x <= rect->max_x; x++) {
-            if (framebuffer->depth[row+x] > depth) return FALSE;
+            if (framebuffer->api.depth[row+x] > depth) return FALSE;
         }
         #ifdef DMIR_SKIP_OCCLUDED_ROWS
         rect->min_y = y + 1;
         #endif
     }
+    #endif
+    
     return TRUE;
 }
 
@@ -501,14 +647,14 @@ SInt calculate_starting_octant_perspective(ProjectedVertex* grid, float eye_z) {
     return bit_x | bit_y | bit_z;
 }
 
-SInt calculate_starting_octant_ortho(Vector3S* matrix) {
+SInt calculate_starting_octant_ortho(Vector3F* matrix) {
     SInt bit_x = (matrix[1].y * matrix[2].x <= matrix[1].x * matrix[2].y ? 0 : 1);
     SInt bit_y = (matrix[2].y * matrix[0].x <= matrix[2].x * matrix[0].y ? 0 : 2);
     SInt bit_z = (matrix[0].y * matrix[1].x <= matrix[0].x * matrix[1].y ? 0 : 4);
     return bit_x | bit_y | bit_z;
 }
 
-SInt calculate_octant_order(Vector3S* matrix) {
+SInt calculate_octant_order(Vector3F* matrix) {
     Depth xz = ABS(matrix[0].z);
     Depth yz = ABS(matrix[1].z);
     Depth zz = ABS(matrix[2].z);
@@ -647,45 +793,71 @@ void calculate_screen_bounds(ProjectedVertex* grid, Bounds* bounds, float* max_s
     }
 }
 
-static inline void write_pixel(Framebuffer* framebuffer, SInt i,
+#define STENCIL_INDEX(buf, x, y) (\
+    ((x) >> STENCIL_SHIFT_X) + (((y) >> STENCIL_SHIFT_Y) << (buf)->stencil_row_shift)\
+)
+#define STENCIL_BIT(x, y) (\
+    ((Stencil)(1)) << (((x) & STENCIL_MASK_X) + (((y) & STENCIL_MASK_Y) << STENCIL_SHIFT_X))\
+)
+
+static inline void write_pixel(FramebufferInternal* framebuffer, SInt i,
     int32_t affine_id, uint32_t address, Octree* octree)
 {
     #ifdef DMIR_USE_SPLAT_COLOR
     uint8_t* data_ptr = PTR_INDEX(octree->data, address);
     Color* color_ptr = (Color*)data_ptr;
-    framebuffer->color[i] = *color_ptr;
+    framebuffer->api.color[i] = *color_ptr;
     #else
-    framebuffer->voxel[i].affine_id = affine_id;
-    framebuffer->voxel[i].address = address;
+    framebuffer->api.voxel[i].affine_id = affine_id;
+    framebuffer->api.voxel[i].address = address;
     #endif
 }
 
-static inline void splat_pixel(Framebuffer* framebuffer, SInt x, SInt y,
-    Depth depth, int32_t affine_id, uint32_t address, Octree* octree)
-{
-    SInt i = PIXEL_INDEX(framebuffer, x, y);
-    
-    if (depth < framebuffer->depth[i]) {
-        framebuffer->depth[i] = depth;
-        write_pixel(framebuffer, i, affine_id, address, octree);
-    }
+static inline void add_fragment(Fragment** fragments, SInt x, SInt y, Depth depth, uint32_t address) {
+    fragments[0]->x = x;
+    fragments[0]->y = y;
+    fragments[0]->z = depth;
+    fragments[0]->address = address;
+    fragments[0]++;
 }
 
-static inline void splat_deferred(Framebuffer* framebuffer, Fragment** fragments,
-    int32_t x, int32_t y, Depth depth, uint32_t address)
-{
-    SInt i = PIXEL_INDEX(framebuffer, x, y);
-    
-    if (depth < framebuffer->depth[i]) {
-        framebuffer->depth[i] = depth;
-        
-        fragments[0]->x = x;
-        fragments[0]->y = y;
-        fragments[0]->z = depth;
-        fragments[0]->address = address;
-        fragments[0]++;
-    }
+#if STENCIL_BITS > 0
+#define CHECK_AND_WRITE_STENCIL(framebuffer, x, y) {\
+    SInt stencil_index = STENCIL_INDEX(framebuffer, x, y);\
+    Stencil stencil_mask = STENCIL_BIT(x, y);\
+    if (!(framebuffer->stencil_tiles[stencil_index].self & stencil_mask)) continue;\
+    framebuffer->stencil_tiles[stencil_index].self &= ~stencil_mask;\
 }
+#else
+#define CHECK_AND_WRITE_STENCIL(framebuffer, x, y)
+#endif
+
+#define CHECK_AND_WRITE_DEPTH(framebuffer, x, y, z) {\
+    SInt i = PIXEL_INDEX(framebuffer, x, y);\
+    if (!(z < framebuffer->api.depth[i])) continue;\
+    framebuffer->api.depth[i] = z;\
+}
+
+#ifdef DMIR_USE_SPLAT_DEFERRED
+#if STENCIL_BITS > 0
+#define SPLAT(framebuffer, fragments, x, y, depth, affine_id, address, octree) {\
+    add_fragment(fragments, x, y, depth, address);\
+}
+#else
+#define SPLAT(framebuffer, fragments, x, y, depth, affine_id, address, octree) {\
+    CHECK_AND_WRITE_DEPTH(framebuffer, x, y, depth);\
+    add_fragment(fragments, x, y, depth, address);\
+}
+#endif
+#else
+#define SPLAT(framebuffer, fragments, x, y, depth, affine_id, address, octree) {\
+    CHECK_AND_WRITE_DEPTH(framebuffer, x, y, depth);\
+    {\
+        SInt i = PIXEL_INDEX(framebuffer, x, y);\
+        write_pixel(framebuffer, i, affine_id, address, octree);\
+    }\
+}
+#endif
 
 SInt calculate_max_level(Vector3F* fmatrix) {
     float gap_x = fabsf(fmatrix[0].x) + fabsf(fmatrix[1].x) + fabsf(fmatrix[2].x);
@@ -697,7 +869,9 @@ SInt calculate_max_level(Vector3F* fmatrix) {
     return -1; // too big; can't render
 }
 
-SInt calculate_ortho_matrix(BatcherInternal* batcher, ProjectedVertex* grid, Vector3S* matrix) {
+SInt calculate_ortho_matrix(BatcherInternal* batcher, ProjectedVertex* grid, Vector3S* matrix,
+    SInt* octant_order, SInt* starting_octant)
+{
     Vector3F* fmatrix = (Vector3F*)matrix;
     fmatrix[0].x = GRID_AXIS_CAGE(grid, 1, 0, 0, projection.x);
     fmatrix[0].y = GRID_AXIS_CAGE(grid, 1, 0, 0, projection.y);
@@ -714,6 +888,10 @@ SInt calculate_ortho_matrix(BatcherInternal* batcher, ProjectedVertex* grid, Vec
     
     SInt max_level = calculate_max_level(fmatrix);
     if (max_level < 0) return -1;
+    
+    // It's easier to calculate these values using floats, to avoid overflow
+    *octant_order = calculate_octant_order(fmatrix);
+    *starting_octant = calculate_starting_octant_ortho(fmatrix);
     
     #ifdef DMIR_COORD_FIXED
     float level_scale = (float)(1 << (SUBPIXEL_BITS - max_level));
@@ -788,12 +966,14 @@ void calculate_ortho_deltas(Vector3S* deltas, Vector3S* matrix, int32_t factor) 
     }
 }
 
-void render_ortho(RendererInternal* renderer, BatcherInternal* batcher, Framebuffer* framebuffer,
+void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
+    FramebufferInternal* framebuffer, Fragment** fragments,
     uint32_t affine_id, Octree* octree, uint32_t address, Effects effects,
     ProjectedVertex* grid, OrthoStackItem* stack_start)
 {
     Vector3S matrix[4];
-    SInt max_level = calculate_ortho_matrix(batcher, grid, matrix);
+    SInt octant_order, starting_octant;
+    SInt max_level = calculate_ortho_matrix(batcher, grid, matrix, &octant_order, &starting_octant);
     if (max_level < 0) return;
     
     effects.max_level = (effects.max_level < 0 ? max_level : MIN(effects.max_level, max_level));
@@ -836,11 +1016,6 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher, Framebuf
     position.y = matrix[3].y;
     position.z = matrix[3].z;
     
-    // Calculate the starting octant
-    SInt octant_order = calculate_octant_order(matrix);
-    SInt starting_octant = calculate_starting_octant_ortho(matrix);
-    SInt starting_octant_reverse = (~starting_octant) & 7;
-    
     Queue* queues = (octree->is_packed ? batcher->lookups->packed : batcher->lookups->sparse);
     Queue* queues_forward = queues + (((octant_order << 3) | (starting_octant ^ 0b000)) << 8);
     Queue* queues_reverse = queues + (((octant_order << 3) | (starting_octant ^ 0b111)) << 8);
@@ -850,8 +1025,6 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher, Framebuf
     
     Depth min_depth = z_to_depth(batcher, batcher->frustum_bounds.min_z);
     Depth max_depth = z_to_depth(batcher, batcher->frustum_bounds.max_z);
-    
-    Fragment* fragments = renderer->fragments;
     
     goto grid_initialized;
     
@@ -912,11 +1085,9 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher, Framebuf
             #ifdef DMIR_USE_SPLAT_PIXEL
             // Splat if size is 1 pixel
             if (is_pixel) {
-                #ifdef DMIR_USE_SPLAT_DEFERRED
-                splat_deferred(framebuffer, &fragments, rect.min_x, rect.min_y, position.z, address);
-                #else
-                splat_pixel(framebuffer, rect.min_x, rect.min_y, position.z, affine_id, address, octree);
-                #endif
+                CHECK_AND_WRITE_STENCIL(framebuffer, rect.min_x, rect.min_y);
+                SPLAT(framebuffer, fragments, rect.min_x, rect.min_y, position.z,
+                    affine_id, address, octree);
                 continue;
             }
             #else
@@ -927,11 +1098,9 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher, Framebuf
             if (is_splat) {
                 for (SInt y = rect.min_y; y <= rect.max_y; y++) {
                     for (SInt x = rect.min_x; x <= rect.max_x; x++) {
-                        #ifdef DMIR_USE_SPLAT_DEFERRED
-                        splat_deferred(framebuffer, &fragments, x, y, position.z, address);
-                        #else
-                        splat_pixel(framebuffer, x, y, position.z, affine_id, address, octree);
-                        #endif
+                        CHECK_AND_WRITE_STENCIL(framebuffer, x, y);
+                        SPLAT(framebuffer, fragments, x, y, position.z,
+                            affine_id, address, octree);
                     }
                 }
                 continue;
@@ -956,11 +1125,9 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher, Framebuf
                     
                     Depth z = position.z + deltas[octant].z;
                     
-                    #ifdef DMIR_USE_SPLAT_DEFERRED
-                    splat_deferred(framebuffer, &fragments, x, y, z, address);
-                    #else
-                    splat_pixel(framebuffer, x, y, z, affine_id, address, octree);
-                    #endif
+                    CHECK_AND_WRITE_STENCIL(framebuffer, x, y);
+                    SPLAT(framebuffer, fragments, x, y, z,
+                        affine_id, address, octree);
                 }
                 continue;
             }
@@ -983,13 +1150,6 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher, Framebuf
             stack->count++;
         }
     } while (stack > stack_start);
-    
-    #ifdef DMIR_USE_SPLAT_DEFERRED
-    for (Fragment* fragment = renderer->fragments; fragment != fragments; fragment++) {
-        SInt i = PIXEL_INDEX(framebuffer, fragment->x, fragment->y);
-        write_pixel(framebuffer, i, affine_id, fragment->address, octree);
-    }
-    #endif
 }
 
 ///////////////////////////////////////////
@@ -997,64 +1157,139 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher, Framebuf
 ///////////////////////////////////////////
 
 Framebuffer* dmir_framebuffer_make(uint32_t size_x, uint32_t size_y) {
-    Framebuffer* framebuffer = malloc(sizeof(Framebuffer));
+    FramebufferInternal* framebuffer = malloc(sizeof(FramebufferInternal));
     
     if (framebuffer) {
-        framebuffer->depth = NULL;
-        framebuffer->voxel = NULL;
-        framebuffer->color = NULL;
+        framebuffer->api.depth = NULL;
+        framebuffer->api.voxel = NULL;
+        framebuffer->api.color = NULL;
         
-        dmir_framebuffer_resize(framebuffer, size_x, size_y);
+        framebuffer->stencil_tiles = NULL;
+        framebuffer->stencil_x_base = NULL;
+        framebuffer->stencil_y_base = NULL;
+        framebuffer->stencil_x = NULL;
+        framebuffer->stencil_y = NULL;
+        framebuffer->api.stencil_size_x = 0;
+        framebuffer->api.stencil_size_y = 0;
+        framebuffer->api.stencil_count_x = 0;
+        framebuffer->api.stencil_count_y = 0;
+        
+        dmir_framebuffer_resize((Framebuffer*)framebuffer, size_x, size_y);
     }
     
-    return framebuffer;
+    return (Framebuffer*)framebuffer;
 }
 
-void framebuffer_free_channels(Framebuffer* framebuffer) {
-    if (framebuffer->depth) free(framebuffer->depth);
-    if (framebuffer->voxel) free(framebuffer->voxel);
-    if (framebuffer->color) free(framebuffer->color);
+void framebuffer_free_channels(FramebufferInternal* framebuffer) {
+    if (framebuffer->api.depth) free(framebuffer->api.depth);
+    if (framebuffer->api.voxel) free(framebuffer->api.voxel);
+    if (framebuffer->api.color) free(framebuffer->api.color);
+    if (framebuffer->stencil_tiles) free(framebuffer->stencil_tiles);
+    if (framebuffer->stencil_x_base) free(framebuffer->stencil_x_base);
+    if (framebuffer->stencil_y_base) free(framebuffer->stencil_y_base);
 }
 
-void dmir_framebuffer_free(Framebuffer* framebuffer) {
+void dmir_framebuffer_free(Framebuffer* framebuffer_ptr) {
+    FramebufferInternal* framebuffer = (FramebufferInternal*)framebuffer_ptr;
+    
     framebuffer_free_channels(framebuffer);
     
     free(framebuffer);
 }
 
-void dmir_framebuffer_resize(Framebuffer* framebuffer, uint32_t size_x, uint32_t size_y) {
-    framebuffer_free_channels(framebuffer);
-    
-    framebuffer->size_x = size_x;
-    framebuffer->size_y = size_y;
-    framebuffer->row_shift = pow2_ceil(size_x);
-    
-    SInt buffer_size = dmir_row_size(framebuffer) * framebuffer->size_y;
-    buffer_size = MAX(buffer_size, 1); // safeguard if width or height is 0
-    framebuffer->depth = malloc(buffer_size * sizeof(Depth));
-    framebuffer->voxel = malloc(buffer_size * sizeof(VoxelRef));
-    framebuffer->color = malloc(buffer_size * sizeof(Color));
-    
-    dmir_framebuffer_clear(framebuffer);
+Stencil* stencil_masks_make(SInt size, SInt margin, Stencil mask, SInt step) {
+    SInt count = size + 1 + margin * 2;
+    Stencil* result = malloc(count * sizeof(Stencil));
+    for (SInt i = 0; i <= margin; i++) {
+        result[i] = 0;
+    }
+    for (SInt i = 1; i < size; i++) {
+        result[margin + i] = result[margin + i - 1] | (mask << ((i-1) * step));
+    }
+    for (SInt i = margin + size; i < count; i++) {
+        result[i] = STENCIL_CLEAR;
+    }
+    return result;
 }
 
-void dmir_framebuffer_clear(Framebuffer* framebuffer) {
+void dmir_framebuffer_resize(Framebuffer* framebuffer_ptr, uint32_t size_x, uint32_t size_y) {
+    FramebufferInternal* framebuffer = (FramebufferInternal*)framebuffer_ptr;
+    
+    framebuffer_free_channels(framebuffer);
+    
+    framebuffer->api.size_x = size_x;
+    framebuffer->api.size_y = size_y;
+    framebuffer->api.row_shift = pow2_ceil(size_x);
+    
+    SInt buffer_size = dmir_row_size((Framebuffer*)framebuffer) * framebuffer->api.size_y;
+    buffer_size = MAX(buffer_size, 1); // safeguard if width or height is 0
+    framebuffer->api.depth = malloc(buffer_size * sizeof(Depth));
+    framebuffer->api.voxel = malloc(buffer_size * sizeof(VoxelRef));
+    framebuffer->api.color = malloc(buffer_size * sizeof(Color));
+    
+    #if STENCIL_BITS > 0
+    framebuffer->api.stencil_size_x = STENCIL_SIZE_X;
+    framebuffer->api.stencil_size_y = STENCIL_SIZE_Y;
+    framebuffer->api.stencil_count_x = (size_x + (STENCIL_SIZE_X - 1)) >> STENCIL_SHIFT_X;
+    framebuffer->api.stencil_count_y = (size_y + (STENCIL_SIZE_Y - 1)) >> STENCIL_SHIFT_Y;
+    framebuffer->stencil_row_shift = pow2_ceil(framebuffer->api.stencil_count_x);
+    #else
+    framebuffer->api.stencil_size_x = 0;
+    framebuffer->api.stencil_size_y = 0;
+    framebuffer->api.stencil_count_x = 0;
+    framebuffer->api.stencil_count_y = 0;
+    framebuffer->stencil_row_shift = 0;
+    #endif
+    
+    SInt tiles_count = (1 << framebuffer->stencil_row_shift) * framebuffer->api.stencil_count_y;
+    framebuffer->stencil_tiles = malloc(tiles_count * sizeof(StencilTile));
+    
+    // Add 1 just to be safe
+    SInt margin_x = size_x + 1;
+    SInt margin_y = size_y + 1;
+    framebuffer->stencil_x_base = stencil_masks_make(
+        STENCIL_SIZE_X, margin_x, STENCIL_LUT_MASK_X, STENCIL_LUT_STEP_X);
+    framebuffer->stencil_y_base = stencil_masks_make(
+        STENCIL_SIZE_Y, margin_y, STENCIL_LUT_MASK_Y, STENCIL_LUT_STEP_Y);
+    framebuffer->stencil_x = framebuffer->stencil_x_base + margin_x;
+    framebuffer->stencil_y = framebuffer->stencil_y_base + margin_y;
+    
+    dmir_framebuffer_clear((Framebuffer*)framebuffer);
+}
+
+void dmir_framebuffer_clear(Framebuffer* framebuffer_ptr) {
+    FramebufferInternal* framebuffer = (FramebufferInternal*)framebuffer_ptr;
+    
     Color color = {.r = 0, .g = 0, .b = 0};
     VoxelRef voxel = {.affine_id = -1, .address = 0};
     
-    for (SInt y = 0; y < framebuffer->size_y; y++) {
-        Depth* depth_row = framebuffer->depth + PIXEL_INDEX(framebuffer, 0, y);
-        VoxelRef* voxel_row = framebuffer->voxel + PIXEL_INDEX(framebuffer, 0, y);
-        Color* color_row = framebuffer->color + PIXEL_INDEX(framebuffer, 0, y);
-        for (SInt x = 0; x < framebuffer->size_x; x++) {
+    for (SInt y = 0; y < framebuffer->api.size_y; y++) {
+        Depth* depth_row = framebuffer->api.depth + PIXEL_INDEX(framebuffer, 0, y);
+        VoxelRef* voxel_row = framebuffer->api.voxel + PIXEL_INDEX(framebuffer, 0, y);
+        Color* color_row = framebuffer->api.color + PIXEL_INDEX(framebuffer, 0, y);
+        for (SInt x = 0; x < framebuffer->api.size_x; x++) {
             depth_row[x] = DMIR_MAX_DEPTH;
             voxel_row[x] = voxel;
             color_row[x] = color;
         }
     }
+    
+    StencilTile* stencil_row = framebuffer->stencil_tiles;
+    SInt stencil_row_step = 1 << framebuffer->stencil_row_shift;
+    for (SInt ty = 0; ty < framebuffer->api.stencil_count_y; ty++) {
+        for (SInt tx = 0; tx < framebuffer->api.stencil_count_x; tx++) {
+            stencil_row[tx].self = STENCIL_CLEAR;
+            stencil_row[tx].scene = STENCIL_CLEAR;
+            stencil_row[tx].depth = DMIR_MAX_DEPTH;
+            stencil_row[tx].update = 0;
+        }
+        stencil_row += stencil_row_step;
+    }
 }
 
-Bool dmir_is_occluded_quad(Framebuffer* framebuffer, Rect rect, Depth depth) {
+Bool dmir_is_occluded_quad(Framebuffer* framebuffer_ptr, Rect rect, Depth depth) {
+    FramebufferInternal* framebuffer = (FramebufferInternal*)framebuffer_ptr;
+    
     return (Bool)is_occluded_quad(framebuffer, &rect, depth);
 }
 
@@ -1193,10 +1428,11 @@ Subtree* batcher_add_subtree(BatcherInternal* batcher) {
     return subtree;
 }
 
-void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer,
+void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer_ptr,
     uint32_t group, float* cage_ptr, Octree* octree, uint32_t root, Effects effects)
 {
     BatcherInternal* batcher = (BatcherInternal*)batcher_ptr;
+    FramebufferInternal* framebuffer = (FramebufferInternal*)framebuffer_ptr;
     
     GridStackItem* stack_start = batcher->stack;
     GridStackItem* stack = stack_start;
@@ -1488,8 +1724,111 @@ void dmir_renderer_free(Renderer* renderer_ptr) {
     free(renderer);
 }
 
-void render_cage(RendererInternal* renderer, BatcherInternal* batcher, Framebuffer* framebuffer,
-    Subtree* subtree)
+static inline void tile_depth_update(FramebufferInternal* framebuffer,
+    StencilTile* tile, SInt tx, SInt ty)
+{
+    Depth* depth_buf = framebuffer->api.depth;
+    
+    #ifdef DMIR_DEPTH_INT32
+    Depth invalid_depth = INT32_MIN;
+    #else
+    Depth invalid_depth = -INFINITY;
+    #endif
+    Depth max_depth = invalid_depth;
+    
+    SInt min_x = tx, max_x = tx + STENCIL_SIZE_X - 1;
+    SInt min_y = ty, max_y = ty + STENCIL_SIZE_Y - 1;
+    for (SInt y = min_y; y <= max_y; y++) {
+        SInt i = PIXEL_INDEX(framebuffer, 0, y);
+        for (SInt x = min_x; x <= max_x; x++, i++) {
+            if ((depth_buf[i] < DMIR_MAX_DEPTH) & (depth_buf[i] > max_depth)) {
+                max_depth = depth_buf[i];
+            }
+        }
+    }
+    
+    if (max_depth > invalid_depth) {
+        tile->depth = max_depth;
+    }
+}
+
+void write_fragments(RendererInternal* renderer, FramebufferInternal* framebuffer,
+    Fragment** fragments, uint32_t affine_id, Octree* octree)
+{
+    SInt tile_head = -1;
+    SInt tile_tail = -1;
+    StencilTile* tiles = framebuffer->stencil_tiles;
+    
+    for (Fragment* fragment = renderer->fragments; fragment != fragments[0]; fragment++) {
+        #if STENCIL_BITS > 0
+        {
+            // We need to clear self-stencil even if fragments are rejected by depth
+            SInt tx = fragment->x >> STENCIL_SHIFT_X;
+            SInt ty = fragment->y >> STENCIL_SHIFT_Y;
+            SInt ti = tx + (ty << framebuffer->stencil_row_shift);
+            StencilTile* tile = tiles + ti;
+            if (!tile->update) {
+                STENCIL_UPDATE_STENCIL_SET(tile);
+                STENCIL_UPDATE_NEXT_SET(tile, -1);
+                if (tile_tail < 0) {
+                    tile_head = ti;
+                } else {
+                    STENCIL_UPDATE_NEXT_SET(tiles + tile_tail, ti);
+                }
+                tile_tail = ti;
+            }
+            
+            SInt i = PIXEL_INDEX(framebuffer, fragment->x, fragment->y);
+            if (!(fragment->z < framebuffer->api.depth[i])) continue;
+            
+            // Skip the max depth recalculation if the pixel we're about to
+            // overwrite had the default depth or is not at tile's max depth
+            if (framebuffer->api.depth[i] == DMIR_MAX_DEPTH) {
+                if ((tile->depth == DMIR_MAX_DEPTH) | (fragment->z > tile->depth)) {
+                    tile->depth = fragment->z;
+                }
+            } else if (framebuffer->api.depth[i] == tile->depth) {
+                STENCIL_UPDATE_DEPTH_SET(tile);
+            }
+            
+            framebuffer->api.depth[i] = fragment->z;
+        }
+        #endif
+        
+        {
+            SInt i = PIXEL_INDEX(framebuffer, fragment->x, fragment->y);
+            write_pixel(framebuffer, i, affine_id, fragment->address, octree);
+        }
+    }
+    
+    #if STENCIL_BITS > 0
+    SInt stencil_row_shift = framebuffer->stencil_row_shift;
+    SInt stencil_row_mask = (1 << stencil_row_shift) - 1;
+    
+    SInt tile_next = tile_head & STENCIL_UPDATE_NEXT;
+    while (tile_next < STENCIL_UPDATE_NEXT) {
+        SInt ti = tile_next;
+        StencilTile* tile = tiles + ti;
+        tile_next = STENCIL_UPDATE_NEXT_GET(tile);
+        
+        if (STENCIL_UPDATE_STENCIL_GET(tile)) {
+            tile->scene &= tile->self;
+            tile->self = STENCIL_CLEAR;
+        }
+        
+        if (STENCIL_UPDATE_DEPTH_GET(tile)) {
+            SInt tx = (ti & stencil_row_mask) << STENCIL_SHIFT_X;
+            SInt ty = (ti >> stencil_row_shift) << STENCIL_SHIFT_Y;
+            tile_depth_update(framebuffer, tile, tx, ty);
+        }
+        
+        tiles[ti].update = 0;
+    }
+    #endif
+}
+
+void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
+    FramebufferInternal* framebuffer, Subtree* subtree)
 {
     uint32_t affine_id = subtree->affine_id;
     Octree* octree = batcher->affine[affine_id].octree;
@@ -1521,6 +1860,10 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher, Framebuff
     stack->is_behind = (bounds.min_z <= batcher->eye_z);
     
     Queue* queues = (octree->is_packed ? batcher->lookups->packed : batcher->lookups->sparse);
+    
+    Fragment* fragments_start = renderer->fragments;
+    // IMPORTANT: we need to update a local variable, not renderer->fragments!
+    Fragment** fragments = &fragments_start;
     
     goto grid_initialized;
     
@@ -1599,7 +1942,9 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher, Framebuff
             #ifdef DMIR_USE_SPLAT_PIXEL
             // Splat if size is 1 pixel
             if (is_pixel) {
-                splat_pixel(framebuffer, rect.min_x, rect.min_y, depth, affine_id, address, octree);
+                CHECK_AND_WRITE_STENCIL(framebuffer, rect.min_x, rect.min_y);
+                SPLAT(framebuffer, fragments, rect.min_x, rect.min_y, depth,
+                    affine_id, address, octree);
                 continue;
             }
             #else
@@ -1610,7 +1955,9 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher, Framebuff
             if (is_splat) {
                 for (SInt y = rect.min_y; y <= rect.max_y; y++) {
                     for (SInt x = rect.min_x; x <= rect.max_x; x++) {
-                        splat_pixel(framebuffer, x, y, depth, affine_id, address, octree);
+                        CHECK_AND_WRITE_STENCIL(framebuffer, x, y);
+                        SPLAT(framebuffer, fragments, x, y, depth,
+                            affine_id, address, octree);
                     }
                 }
                 continue;
@@ -1639,7 +1986,8 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher, Framebuff
             sub_effects.dilation_abs += projection_distortion * 0.5f;
             sub_effects.dilation_rel *= (1 << stack->level);
             
-            render_ortho(renderer, batcher, framebuffer, affine_id, octree, address, sub_effects,
+            render_ortho(renderer, batcher, framebuffer, fragments,
+                affine_id, octree, address, sub_effects,
                 stack->grid, (OrthoStackItem*)(stack+1));
             continue;
         }
@@ -1674,11 +2022,15 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher, Framebuff
             stack->count++;
         }
     } while (stack > stack_start);
+    
+    #ifdef DMIR_USE_SPLAT_DEFERRED
+    write_fragments(renderer, framebuffer, fragments, affine_id, octree);
+    #endif
 }
 
 void dmir_renderer_draw(Renderer* renderer_ptr) {
     RendererInternal* renderer = (RendererInternal*)renderer_ptr;
-    Framebuffer* framebuffer = renderer->api.framebuffer;
+    FramebufferInternal* framebuffer = (FramebufferInternal*)renderer->api.framebuffer;
     BatcherInternal* batcher = (BatcherInternal*)renderer->api.batcher;
     
     SInt size_x = renderer->api.rect.max_x - renderer->api.rect.min_x + 1;
@@ -1686,7 +2038,8 @@ void dmir_renderer_draw(Renderer* renderer_ptr) {
     SInt rect_area = size_x * size_y;
     if (rect_area > renderer->fragments_size) {
         renderer->fragments_size = 1 << pow2_ceil(rect_area);
-        renderer->fragments = realloc(renderer->fragments, renderer->fragments_size * sizeof(Fragment));
+        SInt size_in_bytes = renderer->fragments_size * sizeof(Fragment);
+        renderer->fragments = realloc(renderer->fragments, size_in_bytes);
     }
     
     Subtree* subtrees = batcher->subtrees;

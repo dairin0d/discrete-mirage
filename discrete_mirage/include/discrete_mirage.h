@@ -10,11 +10,11 @@
 extern "C" {
 #endif
 
-// #define DMIR_DEPTH_INT32
-#define DMIR_DEPTH_FLOAT
+#define DMIR_DEPTH_INT32
+// #define DMIR_DEPTH_FLOAT
 
-// #define DMIR_COORD_FIXED 16
-#define DMIR_COORD_FLOAT
+#define DMIR_COORD_FIXED 16
+// #define DMIR_COORD_FLOAT
 
 // #define DMIR_ROW_POW2
 
@@ -29,8 +29,16 @@ extern "C" {
 #define DMIR_USE_OCCLUSION
 #define DMIR_SKIP_OCCLUDED_ROWS
 
+// #define DMIR_STENCIL_BITS 16
+// #define DMIR_STENCIL_BITS 32
+#define DMIR_STENCIL_BITS 64
+// #define DMIR_STENCIL_1D
+// #define DMIR_STENCIL_2D
+#define DMIR_STENCIL_EXACT
+// #define DMIR_STENCIL_COARSE
+
 // #define DMIR_USE_SPLAT_COLOR
-// #define DMIR_USE_SPLAT_DEFERRED
+#define DMIR_USE_SPLAT_DEFERRED
 #define DMIR_USE_SPLAT_PIXEL
 #define DMIR_USE_BLIT_AT_2X2
 
@@ -103,6 +111,10 @@ typedef struct DMirFramebuffer {
     uint32_t size_x;
     uint32_t size_y;
     uint32_t row_shift;
+    uint32_t stencil_size_x;
+    uint32_t stencil_size_y;
+    uint32_t stencil_count_x;
+    uint32_t stencil_count_y;
 } DMirFramebuffer;
 
 typedef struct DMirBatcher {
