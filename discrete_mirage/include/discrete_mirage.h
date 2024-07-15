@@ -25,6 +25,7 @@ extern "C" {
 // #define DMIR_INT_SIZE 64
 
 #define DMIR_USE_ORTHO
+#define DMIR_ORTHO_TRAVERSE_ALT
 
 #define DMIR_USE_OCCLUSION
 #define DMIR_SKIP_OCCLUDED_ROWS
