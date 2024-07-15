@@ -258,9 +258,7 @@ typedef struct GridStackItem {
 typedef struct OrthoStackItem {
     Vector3S deltas[CAGE_SIZE];
     Vector3S center;
-    Coord extent_x;
-    Coord extent_y;
-    Depth extent_z;
+    Vector3S extent;
     Rect rect;
     uint32_t subnodes[8];
     uint8_t masks[8];
@@ -834,30 +832,30 @@ static inline void add_fragment(Fragment** fragments, SInt x, SInt y, Depth dept
 }
 
 #if STENCIL_BITS > 0
-#define CHECK_AND_WRITE_STENCIL(framebuffer, x, y) {\
+#define CHECK_AND_WRITE_STENCIL(framebuffer, x, y, stop) {\
     SInt stencil_index = STENCIL_INDEX(framebuffer, x, y);\
     Stencil stencil_mask = STENCIL_BIT(x, y);\
-    if (!(framebuffer->stencil_tiles[stencil_index].self & stencil_mask)) continue;\
+    if (!(framebuffer->stencil_tiles[stencil_index].self & stencil_mask)) stop;\
     framebuffer->stencil_tiles[stencil_index].self &= ~stencil_mask;\
 }
 #else
-#define CHECK_AND_WRITE_STENCIL(framebuffer, x, y)
+#define CHECK_AND_WRITE_STENCIL(framebuffer, x, y, stop)
 #endif
 
-#define CHECK_AND_WRITE_DEPTH(framebuffer, x, y, z) {\
+#define CHECK_AND_WRITE_DEPTH(framebuffer, x, y, z, stop) {\
     SInt i = PIXEL_INDEX(framebuffer, x, y);\
-    if (!(z < framebuffer->api.depth[i])) continue;\
+    if (!(z < framebuffer->api.depth[i])) stop;\
     framebuffer->api.depth[i] = z;\
 }
 
 #ifdef DMIR_USE_SPLAT_DEFERRED
 #if STENCIL_BITS > 0
-#define SPLAT(framebuffer, fragments, x, y, depth, affine_id, address, octree) {\
+#define SPLAT(framebuffer, fragments, x, y, depth, affine_id, address, octree, stop) {\
     add_fragment(fragments, x, y, depth, address);\
 }
 #else
-#define SPLAT(framebuffer, fragments, x, y, depth, affine_id, address, octree) {\
-    CHECK_AND_WRITE_DEPTH(framebuffer, x, y, depth);\
+#define SPLAT(framebuffer, fragments, x, y, depth, affine_id, address, octree, stop) {\
+    CHECK_AND_WRITE_DEPTH(framebuffer, x, y, depth, stop);\
     add_fragment(fragments, x, y, depth, address);\
 }
 #endif
@@ -978,6 +976,108 @@ void calculate_ortho_deltas(Vector3S* deltas, Vector3S* matrix, int32_t factor) 
     }
 }
 
+static inline SInt render_ortho_cull_draw(
+    FramebufferInternal* framebuffer,
+    Fragment** fragments,
+    Octree* octree,
+    Depth min_depth, Depth max_depth,
+    Vector3S* position, Vector3S* extent,
+    Rect* rect, Rect* clip_rect,
+    uint32_t affine_id, uint32_t address,
+    SInt is_max_level,
+    uint8_t* mask, uint32_t* child_start,
+    Queue* queues_forward, Vector3S* deltas)
+{
+    Depth depth = position->z - extent->z;
+    
+    if (depth >= max_depth) return TRUE;
+    
+    // Calculate screen-space bounds (in pixels)
+    rect->min_x = COORD_TO_PIXEL(position->x - extent->x);
+    rect->max_x = COORD_TO_PIXEL(position->x + extent->x);
+    rect->min_y = COORD_TO_PIXEL(position->y - extent->y);
+    rect->max_y = COORD_TO_PIXEL(position->y + extent->y);
+    
+    // Calculate node size (in pixels)
+    SInt size_x = rect->max_x - rect->min_x;
+    SInt size_y = rect->max_y - rect->min_y;
+    SInt size_max = MAX(size_x, size_y);
+    
+    // Clamp to viewport
+    // RECT_CLIP(rect, clip_rect);
+    MAX_UPDATE(rect->min_x, clip_rect->min_x);
+    MAX_UPDATE(rect->min_y, clip_rect->min_y);
+    MIN_UPDATE(rect->max_x, clip_rect->max_x);
+    MIN_UPDATE(rect->max_y, clip_rect->max_y);
+    
+    // Skip if not visible
+    if ((rect->min_x > rect->max_x) | (rect->min_y > rect->max_y)) return TRUE;
+    
+    #ifdef DMIR_USE_SPLAT_PIXEL
+    // Splat if size is 1 pixel
+    if (size_max == 0) {
+        if (depth < min_depth) return TRUE;
+        
+        CHECK_AND_WRITE_STENCIL(framebuffer, rect->min_x, rect->min_y, return TRUE);
+        SPLAT(framebuffer, fragments, rect->min_x, rect->min_y, position->z,
+            affine_id, address, octree, return TRUE);
+        
+        return TRUE;
+    }
+    #endif
+    
+    *mask = *PTR_INDEX(octree->mask, address);
+    
+    // Splat if this is a leaf node or reached max displayed level
+    if ((size_max == 0) | (!*mask) | is_max_level) {
+        if (depth < min_depth) return TRUE;
+        
+        for (SInt y = rect->min_y; y <= rect->max_y; y++) {
+            for (SInt x = rect->min_x; x <= rect->max_x; x++) {
+                CHECK_AND_WRITE_STENCIL(framebuffer, x, y, continue);
+                SPLAT(framebuffer, fragments, x, y, position->z,
+                    affine_id, address, octree, continue);
+            }
+        }
+        
+        return TRUE;
+    }
+    
+    // Do an occlusion check
+    if (is_occluded_quad(framebuffer, rect, depth)) return TRUE;
+    
+    *child_start = *PTR_INDEX(octree->addr, address);
+    
+    #ifdef DMIR_USE_BLIT_AT_2X2
+    if (size_max <= 1) {
+        if (depth < min_depth) return TRUE;
+        
+        Queue queue = queues_forward[*mask];
+        for (; queue.indices != 0; queue.indices >>= 4, queue.octants >>= 4) {
+            SInt octant = (queue.octants & 7);
+            
+            SInt x = COORD_TO_PIXEL(position->x + deltas[octant].x);
+            if ((x < clip_rect->min_x) | (x > clip_rect->max_x)) continue;
+            
+            SInt y = COORD_TO_PIXEL(position->y + deltas[octant].y);
+            if ((y < clip_rect->min_y) | (y > clip_rect->max_y)) continue;
+            
+            Depth z = position->z + deltas[octant].z;
+            
+            address = *child_start + (queue.indices & 7);
+            
+            CHECK_AND_WRITE_STENCIL(framebuffer, x, y, continue);
+            SPLAT(framebuffer, fragments, x, y, z,
+                affine_id, address, octree, continue);
+        }
+        
+        return TRUE;
+    }
+    #endif
+    
+    return FALSE;
+}
+
 void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
     FramebufferInternal* framebuffer, Fragment** fragments,
     uint32_t affine_id, Octree* octree, uint32_t address, Effects effects,
@@ -1000,14 +1100,12 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
     
     calculate_ortho_deltas(stack->deltas, matrix, 2);
     
-    stack->extent_x = extent.x;
-    stack->extent_y = extent.y;
-    stack->extent_z = extent.z;
+    stack->extent = extent;
     
     for (SInt level = 1; level <= effects.max_level; level++) {
-        stack[level].extent_x = COORD_HALVE(stack[level-1].extent_x);
-        stack[level].extent_y = COORD_HALVE(stack[level-1].extent_y);
-        stack[level].extent_z = DEPTH_HALVE(stack[level-1].extent_z);
+        stack[level].extent.x = COORD_HALVE(stack[level-1].extent.x);
+        stack[level].extent.y = COORD_HALVE(stack[level-1].extent.y);
+        stack[level].extent.z = DEPTH_HALVE(stack[level-1].extent.z);
         for (SInt octant = 0; octant < 8; octant++) {
             stack[level].deltas[octant].x = COORD_HALVE(stack[level-1].deltas[octant].x);
             stack[level].deltas[octant].y = COORD_HALVE(stack[level-1].deltas[octant].y);
@@ -1017,8 +1115,8 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
     
     for (SInt level = 0; level <= effects.max_level; level++) {
         stack[level].level = level;
-        stack[level].extent_x += dilation;
-        stack[level].extent_y += dilation;
+        stack[level].extent.x += dilation;
+        stack[level].extent.y += dilation;
     }
     
     stack->rect = renderer->api.rect;
@@ -1031,9 +1129,6 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
     Queue* queues = (octree->is_packed ? batcher->lookups->packed : batcher->lookups->sparse);
     Queue* queues_forward = queues + (((octant_order << 3) | (starting_octant ^ 0b000)) << 8);
     Queue* queues_reverse = queues + (((octant_order << 3) | (starting_octant ^ 0b111)) << 8);
-    
-    SInt mask = *PTR_INDEX(octree->mask, address);
-    uint32_t child_start = *PTR_INDEX(octree->addr, address);
     
     Depth min_depth = z_to_depth(batcher, batcher->frustum_bounds.min_z);
     Depth max_depth = z_to_depth(batcher, batcher->frustum_bounds.max_z);
@@ -1048,8 +1143,6 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
                 continue;
             }
             stack->count--;
-            child_start = stack->subnodes[stack->count];
-            mask = stack->masks[stack->count];
             address = stack->addresses[stack->count];
             
             SInt octant = stack->octants[stack->count];
@@ -1060,85 +1153,21 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
         
         grid_initialized:;
         
-        Depth depth = position.z - stack->extent_z;
-        
-        if (depth >= max_depth) continue;
-        
-        // Calculate screen-space bounds (in pixels)
         Rect rect;
-        rect.min_x = COORD_TO_PIXEL(position.x - stack->extent_x);
-        rect.max_x = COORD_TO_PIXEL(position.x + stack->extent_x);
-        rect.min_y = COORD_TO_PIXEL(position.y - stack->extent_y);
-        rect.max_y = COORD_TO_PIXEL(position.y + stack->extent_y);
-        
-        // Calculate node size (in pixels)
-        SInt size_x = rect.max_x - rect.min_x;
-        SInt size_y = rect.max_y - rect.min_y;
-        SInt size_max = MAX(size_x, size_y);
-        
-        // Clamp to viewport
-        RECT_CLIP(rect, stack->rect);
-        
-        // Skip if not visible
-        if ((rect.min_x > rect.max_x) | (rect.min_y > rect.max_y)) continue;
-        
-        #ifdef DMIR_USE_SPLAT_PIXEL
-        // Splat if size is 1 pixel
-        if (size_max == 0) {
-            if (depth < min_depth) continue;
-            
-            CHECK_AND_WRITE_STENCIL(framebuffer, rect.min_x, rect.min_y);
-            SPLAT(framebuffer, fragments, rect.min_x, rect.min_y, position.z,
-                affine_id, address, octree);
-            
-            continue;
-        }
-        #endif
-        
-        // Splat if this is a leaf node or reached max displayed level
-        if ((size_max == 0) | (!mask) | (stack->level == effects.max_level)) {
-            if (depth < min_depth) continue;
-            
-            for (SInt y = rect.min_y; y <= rect.max_y; y++) {
-                for (SInt x = rect.min_x; x <= rect.max_x; x++) {
-                    CHECK_AND_WRITE_STENCIL(framebuffer, x, y);
-                    SPLAT(framebuffer, fragments, x, y, position.z,
-                        affine_id, address, octree);
-                }
-            }
-            
-            continue;
-        }
-        
-        // Do an occlusion check
-        if (is_occluded_quad(framebuffer, &rect, depth)) continue;
-        
-        #ifdef DMIR_USE_BLIT_AT_2X2
-        if (size_max <= 1) {
-            if (depth < min_depth) continue;
-            
-            Vector3S* deltas = (stack+1)->deltas;
-            Queue queue = queues_forward[mask];
-            for (; queue.indices != 0; queue.indices >>= 4, queue.octants >>= 4) {
-                SInt octant = (queue.octants & 7);
-                address = child_start + (queue.indices & 7);
-                
-                SInt x = COORD_TO_PIXEL(position.x + deltas[octant].x);
-                if ((x < stack->rect.min_x) | (x > stack->rect.max_x)) continue;
-                
-                SInt y = COORD_TO_PIXEL(position.y + deltas[octant].y);
-                if ((y < stack->rect.min_y) | (y > stack->rect.max_y)) continue;
-                
-                Depth z = position.z + deltas[octant].z;
-                
-                CHECK_AND_WRITE_STENCIL(framebuffer, x, y);
-                SPLAT(framebuffer, fragments, x, y, z,
-                    affine_id, address, octree);
-            }
-            
-            continue;
-        }
-        #endif
+        uint8_t mask;
+        uint32_t child_start;
+        SInt done = render_ortho_cull_draw(
+            framebuffer,
+            fragments,
+            octree,
+            min_depth, max_depth,
+            &position, &stack->extent,
+            &rect, &stack->rect,
+            affine_id, address,
+            stack->level == effects.max_level,
+            &mask, &child_start,
+            queues_forward, (stack+1)->deltas);
+        if (done) continue;
         
         // Push non-empty children on the stack
         stack++;
@@ -1151,8 +1180,6 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
             address = child_start + (queue.indices & 7);
             stack->octants[stack->count] = (queue.octants & 7);
             stack->addresses[stack->count] = address;
-            stack->subnodes[stack->count] = *PTR_INDEX(octree->addr, address);
-            stack->masks[stack->count] = *PTR_INDEX(octree->mask, address);
             stack->count++;
         }
     } while (stack > stack_start);
@@ -1177,10 +1204,20 @@ void render_ortho_alt(RendererInternal* renderer, BatcherInternal* batcher,
     Coord dilation = (Coord)(effects.dilation_abs * SUBPIXEL_SIZE);
     dilation += (Coord)(effects.dilation_rel * 2 * MAX(extent.x, extent.y));
     
-    OrthoStackItemAlt* stack = stack_start;
-    
-    Vector3S deltas[CAGE_SIZE];
+    Vector3S deltas[CAGE_SIZE * ORTHO_MAX_SUBDIVISIONS];
     calculate_ortho_deltas(deltas, matrix, 1);
+    
+    for (SInt level = 1; level <= effects.max_level; level++) {
+        Vector3S* deltasP = deltas + ((level-1) * CAGE_SIZE);
+        Vector3S* deltasN = deltas + (level * CAGE_SIZE);
+        for (SInt octant = 0; octant < 8; octant++) {
+            deltasN[octant].x = COORD_HALVE(deltasP[octant].x);
+            deltasN[octant].y = COORD_HALVE(deltasP[octant].y);
+            deltasN[octant].z = DEPTH_HALVE(deltasP[octant].z);
+        }
+    }
+    
+    OrthoStackItemAlt* stack = stack_start;
     
     stack->rect = renderer->api.rect;
     stack->position = matrix[3];
@@ -1199,91 +1236,26 @@ void render_ortho_alt(RendererInternal* renderer, BatcherInternal* batcher,
         OrthoStackItemAlt current = *stack;
         stack--;
         
-        Depth depth = current.position.z - (extent.z >> current.level);
+        Vector3S current_extent;
+        current_extent.x = (extent.x >> current.level) + dilation;
+        current_extent.y = (extent.y >> current.level) + dilation;
+        current_extent.z = extent.z >> current.level;
         
-        if (depth >= max_depth) continue;
-        
-        // Calculate screen-space bounds (in pixels)
-        SInt extent_x = (extent.x >> current.level) + dilation;
-        SInt extent_y = (extent.y >> current.level) + dilation;
         Rect rect;
-        rect.min_x = COORD_TO_PIXEL(current.position.x - extent_x);
-        rect.max_x = COORD_TO_PIXEL(current.position.x + extent_x);
-        rect.min_y = COORD_TO_PIXEL(current.position.y - extent_y);
-        rect.max_y = COORD_TO_PIXEL(current.position.y + extent_y);
-        
-        // Calculate node size (in pixels)
-        SInt size_x = rect.max_x - rect.min_x;
-        SInt size_y = rect.max_y - rect.min_y;
-        SInt size_max = MAX(size_x, size_y);
-        
-        // Clamp to viewport
-        RECT_CLIP(rect, current.rect);
-        
-        // Skip if not visible
-        if ((rect.min_x > rect.max_x) | (rect.min_y > rect.max_y)) continue;
-        
-        #ifdef DMIR_USE_SPLAT_PIXEL
-        // Splat if size is 1 pixel
-        if (size_max == 0) {
-            if (depth < min_depth) continue;
-            
-            CHECK_AND_WRITE_STENCIL(framebuffer, rect.min_x, rect.min_y);
-            SPLAT(framebuffer, fragments, rect.min_x, rect.min_y, current.position.z,
-                affine_id, current.address, octree);
-            
-            continue;
-        }
-        #endif
-        
-        SInt mask = *PTR_INDEX(octree->mask, current.address);
-        
-        // Splat if this is a leaf node or reached max displayed level
-        if ((size_max == 0) | (!mask) | (current.level == effects.max_level)) {
-            if (depth < min_depth) continue;
-            
-            for (SInt y = rect.min_y; y <= rect.max_y; y++) {
-                for (SInt x = rect.min_x; x <= rect.max_x; x++) {
-                    CHECK_AND_WRITE_STENCIL(framebuffer, x, y);
-                    SPLAT(framebuffer, fragments, x, y, current.position.z,
-                        affine_id, current.address, octree);
-                }
-            }
-            
-            continue;
-        }
-        
-        // Do an occlusion check
-        if (is_occluded_quad(framebuffer, &rect, depth)) continue;
-        
-        uint32_t child_start = *PTR_INDEX(octree->addr, current.address);
-        
-        #ifdef DMIR_USE_BLIT_AT_2X2
-        if (size_max <= 1) {
-            if (depth < min_depth) continue;
-            
-            Queue queue = queues_forward[mask];
-            for (; queue.indices != 0; queue.indices >>= 4, queue.octants >>= 4) {
-                SInt octant = (queue.octants & 7);
-                
-                SInt x = COORD_TO_PIXEL(current.position.x + (deltas[octant].x >> current.level));
-                if ((x < current.rect.min_x) | (x > current.rect.max_x)) continue;
-                
-                SInt y = COORD_TO_PIXEL(current.position.y + (deltas[octant].y >> current.level));
-                if ((y < current.rect.min_y) | (y > current.rect.max_y)) continue;
-                
-                Depth z = current.position.z + (deltas[octant].z >> current.level);
-                
-                uint32_t address = child_start + (queue.indices & 7);
-                
-                CHECK_AND_WRITE_STENCIL(framebuffer, x, y);
-                SPLAT(framebuffer, fragments, x, y, z,
-                    affine_id, address, octree);
-            }
-            
-            continue;
-        }
-        #endif
+        uint8_t mask;
+        uint32_t child_start;
+        SInt done = render_ortho_cull_draw(
+            framebuffer,
+            fragments,
+            octree,
+            min_depth, max_depth,
+            &current.position, &current_extent,
+            &rect, &current.rect,
+            affine_id, current.address,
+            current.level == effects.max_level,
+            &mask, &child_start,
+            queues_forward, (deltas + (current.level * CAGE_SIZE)));
+        if (done) continue;
         
         // Push non-empty children on the stack
         Queue queue = queues_reverse[mask];
@@ -2092,9 +2064,9 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
             #ifdef DMIR_USE_SPLAT_PIXEL
             // Splat if size is 1 pixel
             if (is_pixel) {
-                CHECK_AND_WRITE_STENCIL(framebuffer, rect.min_x, rect.min_y);
+                CHECK_AND_WRITE_STENCIL(framebuffer, rect.min_x, rect.min_y, continue);
                 SPLAT(framebuffer, fragments, rect.min_x, rect.min_y, depth,
-                    affine_id, address, octree);
+                    affine_id, address, octree, continue);
                 continue;
             }
             #else
@@ -2105,9 +2077,9 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
             if (is_splat) {
                 for (SInt y = rect.min_y; y <= rect.max_y; y++) {
                     for (SInt x = rect.min_x; x <= rect.max_x; x++) {
-                        CHECK_AND_WRITE_STENCIL(framebuffer, x, y);
+                        CHECK_AND_WRITE_STENCIL(framebuffer, x, y, continue);
                         SPLAT(framebuffer, fragments, x, y, depth,
-                            affine_id, address, octree);
+                            affine_id, address, octree, continue);
                     }
                 }
                 continue;
