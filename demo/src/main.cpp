@@ -44,6 +44,7 @@ struct ProgramState {
     int cam_zoom;
     int cam_zoom_fov;
     bool is_cam_orbiting;
+    bool is_depth_mode;
     
     DMirRect viewport;
     DMirFrustum frustum;
@@ -253,6 +254,9 @@ int process_event(void* data, SDL_Event* event) {
         case SDLK_PERIOD:
             state->cam_zoom_fov += 1;
             break;
+        case SDLK_TAB:
+            state->is_depth_mode = !state->is_depth_mode;
+            break;
         }
     } else if (event->type == SDL_MOUSEBUTTONDOWN) {
         if (event->button.button == SDL_BUTTON_LEFT) {
@@ -420,20 +424,31 @@ int render_scene(ProgramState* state) {
         int buf_row = y * buf_stride;
         int rev_y = (state->screen_height - 1 - y);
         DMirColor* colors_row = (DMirColor*)((uint8_t*)pixels + rev_y * stride);
+        DMirDepth* depths_row = state->dmir_framebuffer->depth + buf_row;
         DMirVoxelRef* voxels_row = state->dmir_framebuffer->voxel + buf_row;
         for (int x = 0; x < state->screen_width; x++) {
-            #ifdef DMIR_USE_SPLAT_COLOR
-            colors_row[x] = state->dmir_framebuffer->color[buf_row+x];
-            #else
-            if (voxels_row[x].affine_id < 0) {
-                colors_row[x] = {.r = 0, .g = 196, .b = 255};
+            if (state->is_depth_mode) {
+                #ifdef DMIR_DEPTH_INT32
+                colors_row[x].g = depths_row[x] >> 18;
+                #else
+                colors_row[x].g = (int)(8 * 255 * depths_row[x] / state->frustum.max_depth);
+                #endif
+                colors_row[x].r = colors_row[x].g;
+                colors_row[x].b = colors_row[x].g;
             } else {
-                auto affine_info = &affine_infos[voxels_row[x].affine_id];
-                auto octree = affine_info->octree;
-                uint8_t* data_ptr = PTR_INDEX(octree->data, voxels_row[x].address);
-                colors_row[x] = *((DMirColor*)data_ptr);
+                #ifdef DMIR_USE_SPLAT_COLOR
+                colors_row[x] = state->dmir_framebuffer->color[buf_row+x];
+                #else
+                if (voxels_row[x].affine_id < 0) {
+                    colors_row[x] = {.r = 0, .g = 196, .b = 255};
+                } else {
+                    auto affine_info = &affine_infos[voxels_row[x].affine_id];
+                    auto octree = affine_info->octree;
+                    uint8_t* data_ptr = PTR_INDEX(octree->data, voxels_row[x].address);
+                    colors_row[x] = *((DMirColor*)data_ptr);
+                }
+                #endif
             }
-            #endif
         }
     }
     
@@ -497,7 +512,7 @@ int main(int argc, char* argv[]) {
     
     state.frustum = {
         .min_depth = 0.001f,
-        .max_depth = 1000.0f,
+        .max_depth = 10.0f,
         .focal_extent = 1,
         .focal_depth = 1,
         .perspective = 0,
