@@ -1889,7 +1889,7 @@ static inline void tile_depth_update(FramebufferInternal* framebuffer,
     SInt min_x = tx, max_x = tx + STENCIL_SIZE_X - 1;
     SInt min_y = ty, max_y = ty + STENCIL_SIZE_Y - 1;
     for (SInt y = min_y; y <= max_y; y++) {
-        SInt i = PIXEL_INDEX(framebuffer, 0, y);
+        SInt i = PIXEL_INDEX(framebuffer, min_x, y);
         for (SInt x = min_x; x <= max_x; x++, i++) {
             if ((depth_buf[i] < DMIR_MAX_DEPTH) & (depth_buf[i] > max_depth)) {
                 max_depth = depth_buf[i];
