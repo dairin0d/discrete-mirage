@@ -930,10 +930,10 @@ SInt calculate_ortho_matrix(BatcherInternal* batcher, ProjectedVertex* grid, Vec
     matrix[2].y *= 0.5f;
     #endif
     
-    matrix[0].z = z_to_depth(batcher, fmatrix[0].z);
+    matrix[0].z = dz_to_depth(batcher, fmatrix[0].z);
     matrix[1].z = dz_to_depth(batcher, fmatrix[1].z);
     matrix[2].z = dz_to_depth(batcher, fmatrix[2].z);
-    matrix[3].z = dz_to_depth(batcher, fmatrix[3].z);
+    matrix[3].z = z_to_depth(batcher, fmatrix[3].z);
     
     #ifdef DMIR_DEPTH_INT32
     matrix[0].z >>= 1;
