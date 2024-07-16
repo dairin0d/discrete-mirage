@@ -190,6 +190,37 @@ typedef uint32_t Stencil;
 #define ORTHO_TRAVERSE_ALT
 #endif
 
+#if defined(DMIR_MAP_PRECISION) && defined(DMIR_COORD_FIXED)
+#if defined(DMIR_USE_MAP_2) || defined(DMIR_USE_MAP_3) || defined(DMIR_USE_MAP_4)
+#define USE_MAP
+#endif
+#endif
+
+#if defined(USE_MAP) && defined(DMIR_USE_MAP_2)
+#define MAP_2 2
+#else
+#define MAP_2 -1
+#endif
+
+#if defined(USE_MAP) && defined(DMIR_USE_MAP_3)
+#define MAP_3 3
+#else
+#define MAP_3 -1
+#endif
+
+#if defined(USE_MAP) && defined(DMIR_USE_MAP_4)
+#define MAP_4 4
+#else
+#define MAP_4 -1
+#endif
+
+#ifdef USE_MAP
+#define MAP_BITS DMIR_MAP_PRECISION
+#else
+#define MAP_BITS 0
+#endif
+#define MAP_SIZE (1 << MAP_BITS)
+
 typedef DMirBool Bool;
 typedef DMirDepth Depth;
 typedef DMirColor Color;
@@ -976,6 +1007,134 @@ void calculate_ortho_deltas(Vector3S* deltas, Vector3S* matrix, int32_t factor) 
     }
 }
 
+typedef struct MapInfo {
+    uint8_t x8[MAP_SIZE];
+    uint8_t y8[MAP_SIZE];
+    uint64_t x64[MAP_SIZE];
+    uint64_t y64[MAP_SIZE];
+    SInt shift;
+    SInt half;
+    SInt size8;
+    SInt size36;
+    SInt size64;
+    uint32_t full_queue;
+    uint64_t mask_bit0;
+    uint64_t mask_bit1;
+    uint64_t mask_bit2;
+} MapInfo;
+
+void calculate_maps(MapInfo* map, Queue* queues_forward,
+    Vector3S* deltas, Vector3S extent, Coord dilation, SInt max_level)
+{
+    // Don't use map if it's too small or disabled
+    if (MAP_SIZE <= 8) {
+        map->size8 = -1;
+        map->size36 = -1;
+        map->size64 = -1;
+        return;
+    }
+    
+    MAX_UPDATE(dilation, 0);
+    
+    // Expand the "use map" size by the dilation at pixel level
+    SInt pixel_dilation_size = COORD_TO_PIXEL(dilation * 2);
+    MAX_UPDATE(pixel_dilation_size, 0);
+    map->size8 = MAP_2 + pixel_dilation_size;
+    map->size36 = MAP_3 + pixel_dilation_size;
+    map->size64 = MAX(MAP_3, MAP_4) + pixel_dilation_size;
+    
+    // We sample the map at one-above-pixel-size level, so
+    // we need to adjust the dilation size for that level
+    if (max_level > 0) dilation *= (1 << (max_level - 1));
+    
+    Coord max_size = (MAX(extent.x, extent.y) + dilation) * 2 + 1;
+    SInt safe_size = MAP_SIZE - 2; // ensure 1-pixel empty border, just to be safe
+    
+    map->shift = 0;
+    while ((safe_size << map->shift) < max_size) map->shift++;
+    
+    map->half = (MAP_SIZE << map->shift) >> 1;
+    
+    Coord map_center = COORD_HALVE(MAP_SIZE << map->shift);
+    
+    Coord extent8_x = COORD_HALVE(extent.x);
+    Coord extent8_y = COORD_HALVE(extent.y);
+    Coord extent64_x = COORD_HALVE(extent8_x);
+    Coord extent64_y = COORD_HALVE(extent8_y);
+    
+    extent8_x += dilation;
+    extent8_y += dilation;
+    extent64_x += dilation;
+    extent64_y += dilation;
+    
+    #ifdef DMIR_MAP_ENSURE_PIXEL
+    // Imitate "pixel blitting", in the sense of
+    // ensuring that each node covers a pixel
+    Coord full_pixel_size = map->half >> 1;
+    Coord half_pixel_size = full_pixel_size >> 1;
+    MAX_UPDATE(extent8_x, full_pixel_size);
+    MAX_UPDATE(extent8_y, full_pixel_size);
+    MAX_UPDATE(extent64_x, half_pixel_size);
+    MAX_UPDATE(extent64_y, half_pixel_size);
+    #endif
+    
+    for (SInt i = 0; i < MAP_SIZE; i++) {
+        map->x8[i] = 0;
+        map->y8[i] = 0;
+        map->x64[i] = 0;
+        map->y64[i] = 0;
+    }
+    
+    for (SInt octant8 = 0; octant8 < 8; octant8++) {
+        Coord center8_x = map_center + deltas[octant8].x;
+        Coord center8_y = map_center + deltas[octant8].y;
+        
+        SInt min8_x = (center8_x - extent8_x) >> map->shift;
+        SInt min8_y = (center8_y - extent8_y) >> map->shift;
+        SInt max8_x = (center8_x + extent8_x) >> map->shift;
+        SInt max8_y = (center8_y + extent8_y) >> map->shift;
+        
+        uint8_t mask8 = (uint8_t)(1 << octant8);
+        
+        for (SInt x = min8_x; x <= max8_x; x++) {
+            map->x8[x] |= mask8;
+        }
+        for (SInt y = min8_y; y <= max8_y; y++) {
+            map->y8[y] |= mask8;
+        }
+        
+        for (SInt octant64 = 0; octant64 < 8; octant64++) {
+            Coord center64_x = center8_x + COORD_HALVE(deltas[octant64].x);
+            Coord center64_y = center8_y + COORD_HALVE(deltas[octant64].y);
+            
+            SInt min64_x = (center64_x - extent64_x) >> map->shift;
+            SInt min64_y = (center64_y - extent64_y) >> map->shift;
+            SInt max64_x = (center64_x + extent64_x) >> map->shift;
+            SInt max64_y = (center64_y + extent64_y) >> map->shift;
+            
+            uint64_t mask64 = (1UL << octant64) << (octant8 * 8);
+            
+            for (SInt x = min64_x; x <= max64_x; x++) {
+                map->x64[x] |= mask64;
+            }
+            for (SInt y = min64_y; y <= max64_y; y++) {
+                map->y64[y] |= mask64;
+            }
+        }
+    }
+    
+    map->full_queue = queues_forward[255].octants;
+    map->mask_bit0 = 0;
+    map->mask_bit1 = 0;
+    map->mask_bit2 = 0;
+    for (SInt item = 0, queue = map->full_queue; item < 8; item++, queue >>= 4) {
+        uint64_t octant_mask = 255UL << ((queue & 7) * 8);
+        if ((item & 1) == 0) map->mask_bit0 |= octant_mask;
+        if ((item & 2) == 0) map->mask_bit1 |= octant_mask;
+        if ((item & 4) == 0) map->mask_bit2 |= octant_mask;
+    }
+}
+
 static inline SInt render_ortho_cull_draw(
     FramebufferInternal* framebuffer,
     Fragment** fragments,
@@ -986,7 +1145,8 @@ static inline SInt render_ortho_cull_draw(
     uint32_t affine_id, uint32_t address,
     SInt is_max_level,
     uint8_t* mask, uint32_t* child_start,
-    Queue* queues_forward, Vector3S* deltas)
+    Queue* queues_forward, Vector3S* deltas,
+    MapInfo* map, uint32_t* indices, SInt level)
 {
     Depth depth = position->z - extent->z;
     
@@ -1075,6 +1235,100 @@ static inline SInt render_ortho_cull_draw(
     }
     #endif
     
+    #ifdef USE_MAP
+    if (size_max < map->size8) {
+        Coord min_mx = PIXEL_TO_COORD(rect->min_x) - (position->x - (map->half >> level));
+        Coord min_my = PIXEL_TO_COORD(rect->min_y) - (position->y - (map->half >> level));
+        SInt map_shift = map->shift - level;
+        
+        uint8_t indices_mask = (octree->is_packed ? 0 : 255);
+        uint32_t o2i = indices[(*mask) | indices_mask];
+        
+        Coord mx, my;
+        SInt x, y;
+        for (my = min_my, y = rect->min_y; y <= rect->max_y; y++, my += SUBPIXEL_SIZE) {
+            uint8_t mask_y = map->y8[my >> map_shift] & *mask;
+            for (mx = min_mx, x = rect->min_x; x <= rect->max_x; x++, mx += SUBPIXEL_SIZE) {
+                uint8_t mask_xy = map->x8[mx >> map_shift] & mask_y;
+                
+                if (mask_xy == 0) continue;
+                
+                CHECK_AND_WRITE_STENCIL(framebuffer, x, y, continue);
+                
+                uint32_t octant = queues_forward[mask_xy].octants & 7;
+                uint32_t index = (o2i >> (octant*4)) & 7;
+                Depth z = position->z + deltas[octant].z;
+                address = *child_start + index;
+                
+                SPLAT(framebuffer, fragments, x, y, z,
+                    affine_id, address, octree, continue);
+            }
+        }
+        
+        return TRUE;
+    }
+    
+    if (size_max < map->size64) {
+        Coord min_mx = PIXEL_TO_COORD(rect->min_x) - (position->x - (map->half >> level));
+        Coord min_my = PIXEL_TO_COORD(rect->min_y) - (position->y - (map->half >> level));
+        SInt map_shift = map->shift - level;
+        
+        uint8_t indices_mask = (octree->is_packed ? 0 : 255);
+        uint32_t o2i = indices[(*mask) | indices_mask];
+        
+        uint64_t mask64 = 0;
+        Queue queue = queues_forward[*mask];
+        for (; queue.indices != 0; queue.indices >>= 4, queue.octants >>= 4) {
+            uint64_t mask8 = *PTR_INDEX(octree->mask, (*child_start + (queue.indices & 7)));
+            mask64 |= (mask8 ? mask8 : 255) << ((queue.octants & 7) * 8);
+        }
+        
+        SInt use_suboctants = (size_max >= map->size36);
+        
+        Coord mx, my;
+        SInt x, y;
+        for (my = min_my, y = rect->min_y; y <= rect->max_y; y++, my += SUBPIXEL_SIZE) {
+            uint64_t mask_y = map->y64[my >> map_shift] & mask64;
+            for (mx = min_mx, x = rect->min_x; x <= rect->max_x; x++, mx += SUBPIXEL_SIZE) {
+                uint64_t mask_xy = map->x64[mx >> map_shift] & mask_y;
+                
+                if (mask_xy == 0) continue;
+                
+                CHECK_AND_WRITE_STENCIL(framebuffer, x, y, continue);
+                
+                SInt bit2 = ((mask_xy & map->mask_bit2) == 0) & 1;
+                mask_xy &= map->mask_bit2 ^ (-(int64_t)bit2);
+                SInt bit1 = ((mask_xy & map->mask_bit1) == 0) & 1;
+                mask_xy &= map->mask_bit1 ^ (-(int64_t)bit1);
+                SInt bit0 = ((mask_xy & map->mask_bit0) == 0) & 1;
+                SInt queue_item = bit0 | (bit1 << 1) | (bit2 << 2);
+                SInt octant64 = (map->full_queue >> (queue_item << 2)) & 7;
+                
+                Depth z = position->z + deltas[octant64].z;
+                
+                uint32_t index = (o2i >> (octant64*4)) & 7;
+                address = *child_start + index;
+                
+                if (use_suboctants) {
+                    uint8_t sub_mask_full = *PTR_INDEX(octree->mask, address);
+                    if (sub_mask_full != 0) {
+                        uint8_t sub_mask = sub_mask_full & (mask_xy >> (octant64 * 8));
+                        uint32_t octant = queues_forward[sub_mask].octants & 7;
+                        z += deltas[octant].z >> 1;
+                        index = (indices[sub_mask_full | indices_mask] >> (octant*4)) & 7;
+                        address = *PTR_INDEX(octree->addr, address) + index;
+                    }
+                }
+                
+                SPLAT(framebuffer, fragments, x, y, z,
+                    affine_id, address, octree, continue);
+            }
+        }
+        
+        return TRUE;
+    }
+    #endif
+    
     return FALSE;
 }
 
@@ -1130,6 +1384,11 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
     Queue* queues_forward = queues + (((octant_order << 3) | (starting_octant ^ 0b000)) << 8);
     Queue* queues_reverse = queues + (((octant_order << 3) | (starting_octant ^ 0b111)) << 8);
     
+    uint32_t* indices = batcher->lookups->indices;
+    
+    MapInfo map;
+    calculate_maps(&map, queues_forward, stack[1].deltas, extent, dilation, max_level);
+    
     Depth min_depth = z_to_depth(batcher, batcher->frustum_bounds.min_z);
     Depth max_depth = z_to_depth(batcher, batcher->frustum_bounds.max_z);
     
@@ -1166,7 +1425,8 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
             affine_id, address,
             stack->level == effects.max_level,
             &mask, &child_start,
-            queues_forward, (stack+1)->deltas);
+            queues_forward, (stack+1)->deltas,
+            &map, indices, stack->level);
         if (done) continue;
         
         // Push non-empty children on the stack
@@ -1228,6 +1488,11 @@ void render_ortho_alt(RendererInternal* renderer, BatcherInternal* batcher,
     Queue* queues_forward = queues + (((octant_order << 3) | (starting_octant ^ 0b000)) << 8);
     Queue* queues_reverse = queues + (((octant_order << 3) | (starting_octant ^ 0b111)) << 8);
     
+    uint32_t* indices = batcher->lookups->indices;
+    
+    MapInfo map;
+    calculate_maps(&map, queues_forward, deltas, extent, dilation, max_level);
+    
     Depth min_depth = z_to_depth(batcher, batcher->frustum_bounds.min_z);
     Depth max_depth = z_to_depth(batcher, batcher->frustum_bounds.max_z);
     
@@ -1254,7 +1519,8 @@ void render_ortho_alt(RendererInternal* renderer, BatcherInternal* batcher,
             affine_id, current.address,
             current.level == effects.max_level,
             &mask, &child_start,
-            queues_forward, (deltas + (current.level * CAGE_SIZE)));
+            queues_forward, (deltas + (current.level * CAGE_SIZE)),
+            &map, indices, current.level);
         if (done) continue;
         
         // Push non-empty children on the stack
