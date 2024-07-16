@@ -1695,7 +1695,7 @@ Batcher* dmir_batcher_make() {
         
         batcher->stack = malloc(MAX_STACK_DEPTH * sizeof(GridStackItem));
         
-        batcher->api.split_factor = 0.125f;
+        batcher->api.split_factor = INFINITY;
         batcher->api.affine_distortion = 1;
         batcher->api.ortho_distortion = 1;
         
