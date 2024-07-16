@@ -65,7 +65,7 @@ typedef int32_t Coord;
 #define SUBPIXEL_HALF (SUBPIXEL_SIZE >> 1)
 #define ORTHO_MAX_SUBDIVISIONS (31 - SUBPIXEL_BITS)
 #define ORTHO_LEVEL_LIMIT (28 - SUBPIXEL_BITS)
-#define ORTHO_MAX_SIZE (1 << ORTHO_LEVEL_LIMIT)
+#define ORTHO_MAX_SIZE (1 << (ORTHO_LEVEL_LIMIT - 1))
 #define COORD_TO_PIXEL(coord) ((coord) >> SUBPIXEL_BITS)
 #define PIXEL_TO_COORD(pixel) (((pixel) << SUBPIXEL_BITS) + SUBPIXEL_HALF)
 #define COORD_HALVE(coord) ((coord) >> 1)
