@@ -103,7 +103,7 @@ typedef struct DMirEffects {
 typedef struct DMirAffineInfo {
     uint32_t group;
     DMirOctree* octree;
-    float matrix[3*3];
+    float matrix_normal[3*3];
 } DMirAffineInfo;
 
 typedef struct DMirVoxelRef {

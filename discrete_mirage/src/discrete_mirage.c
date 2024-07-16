@@ -1796,10 +1796,10 @@ SInt batcher_add_affine(BatcherInternal* batcher,
     AffineInfo* affine_info = batcher->affine + affine_id;
     affine_info->group = group;
     affine_info->octree = octree;
-    Vector3F* matrix = (Vector3F*)(&affine_info->matrix);
-    matrix[0] = normalized_matrix_axis(grid, 1, 0, 0);
-    matrix[1] = normalized_matrix_axis(grid, 0, 1, 0);
-    matrix[2] = normalized_matrix_axis(grid, 0, 0, 1);
+    Vector3F* matrix_normal = (Vector3F*)(&affine_info->matrix_normal);
+    matrix_normal[0] = normalized_matrix_axis(grid, 1, 0, 0);
+    matrix_normal[1] = normalized_matrix_axis(grid, 0, 1, 0);
+    matrix_normal[2] = normalized_matrix_axis(grid, 0, 0, 1);
     batcher->affine_count++;
     return affine_id;
 }
