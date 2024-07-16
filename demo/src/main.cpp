@@ -1,11 +1,28 @@
 // SPDX-License-Identifier: Zlib
 // SPDX-FileCopyrightText: 2024 dairin0d https://github.com/dairin0d
 
+// Demo controls:
+// * Left mouse button (drag) - orbit the camera
+// * Mouse wheel - zoom in/out
+// * W, S - move forward/backward
+// * A, D - move left/right
+// * R, F - move up/down
+// * Ctrl - use faster movement speed
+// * Shift - use slower movement speed
+// * Space - Switch between perspective and orthographic
+// * < and > - change perspective FOV
+// * { and } - increase/decrease number of threads
+// * Tab - depth visualization mode
+// * Esc - quit
+
+// NOTE: multithreaded mode can segfault, not sure why
+
 #include <string>
 #include <stdint.h>
 #include <vector>
 #include <iostream>
 #include <fstream>
+#include <thread>
 
 #include <SDL2/SDL.h>
 
@@ -33,7 +50,9 @@ struct ProgramState {
     SDL_Texture* texture;
     DMirFramebuffer* dmir_framebuffer;
     DMirBatcher* dmir_batcher;
-    DMirRenderer* dmir_renderer;
+    std::vector<DMirRenderer*> dmir_renderers;
+    int thread_case;
+    int thread_count;
     int screen_width;
     int screen_height;
     bool is_running;
@@ -91,7 +110,9 @@ DMirOctree* load_octree(std::string path, int mode) {
     char* file_data = nullptr;
     read_file(path, &file_size, &file_data);
     
-    const int node_size = 8; // uint32 address + uint8 mask + uint8*3 rgb
+    // This demo expects each node layout to be:
+    // uint32 address + uint8 mask + uint8*3 rgb
+    const int node_size = 8;
     
     if ((file_data == nullptr) || (file_size < 8*node_size)) return nullptr;
     
@@ -254,6 +275,14 @@ int process_event(void* data, SDL_Event* event) {
         case SDLK_PERIOD:
             state->cam_zoom_fov += 1;
             break;
+        case SDLK_LEFTBRACKET:
+            state->thread_case -= 1;
+            if (state->thread_case < 0) state->thread_case = 0;
+            break;
+        case SDLK_RIGHTBRACKET:
+            state->thread_case += 1;
+            if (state->thread_case > 8) state->thread_case = 8;
+            break;
         case SDLK_TAB:
             state->is_depth_mode = !state->is_depth_mode;
             break;
@@ -382,7 +411,96 @@ void render_scene_subset(ProgramState* state, struct mat4 proj_matrix, int imin,
     
     dmir_batcher_sort(state->dmir_batcher);
     
-    dmir_renderer_draw(state->dmir_renderer);
+    if (state->thread_count == 1) {
+        dmir_renderer_draw(state->dmir_renderers[0]);
+    } else {
+        // This naive approach has a notable overhead
+        // (it only becomes faster than single-threaded
+        // at 3 threads or above), but it's simple and
+        // less prone to segfaults than std::for_each
+        // (and this is mainly for demonstration anyway).
+        // For less overhead, thread pools would likely
+        // be better, but that's not in standard library.
+        
+        std::vector<std::thread> threads;
+        for (int i = 0; i < state->thread_count; i++) {
+            threads.emplace_back(dmir_renderer_draw, state->dmir_renderers[i]);
+        }
+        
+        for (auto& thread : threads) {
+            thread.join();
+        }
+    }
+}
+
+void calculate_parts(ProgramState* state, int &parts_x, int &parts_y) {
+    if (state->thread_case <= 0) {
+        parts_x = 1;
+        parts_y = 1;
+    } else if (state->thread_case <= 1) {
+        parts_x = 2;
+        parts_y = 1;
+    } else if (state->thread_case <= 2) {
+        parts_x = 3;
+        parts_y = 1;
+    } else if (state->thread_case <= 3) {
+        parts_x = 2;
+        parts_y = 2;
+    } else if (state->thread_case <= 4) {
+        parts_x = 3;
+        parts_y = 2;
+    } else if (state->thread_case <= 5) {
+        parts_x = 4;
+        parts_y = 2;
+    } else if (state->thread_case <= 6) {
+        parts_x = 3;
+        parts_y = 3;
+    } else if (state->thread_case <= 7) {
+        parts_x = 4;
+        parts_y = 3;
+    } else {
+        parts_x = 4;
+        parts_y = 4;
+    }
+}
+
+void setup_renderers(ProgramState* state) {
+    int parts_x = 1;
+    int parts_y = 1;
+    calculate_parts(state, parts_x, parts_y);
+    
+    state->thread_count = parts_x * parts_y;
+    
+    auto framebuffer = state->dmir_framebuffer;
+    
+    int tiles_x = (framebuffer->size_x + framebuffer->stencil_size_x - 1) / framebuffer->stencil_size_x;
+    int tiles_y = (framebuffer->size_y + framebuffer->stencil_size_y - 1) / framebuffer->stencil_size_y;
+    
+    int index = 0;
+    for (int py = 1, last_y = 0; py <= parts_y; py++) {
+        int end_y = ((tiles_y * py) / parts_y) * framebuffer->stencil_size_y;
+        if (end_y > framebuffer->size_y) end_y = framebuffer->size_y;
+        
+        for (int px = 1, last_x = 0; px <= parts_x; px++) {
+            int end_x = ((tiles_x * px) / parts_x) * framebuffer->stencil_size_x;
+            if (end_x > framebuffer->size_x) end_x = framebuffer->size_x;
+            
+            auto renderer = state->dmir_renderers[index];
+            renderer->framebuffer = state->dmir_framebuffer;
+            renderer->batcher = state->dmir_batcher;
+            renderer->rect = {
+                .min_x = last_x,
+                .min_y = last_y,
+                .max_x = end_x - 1,
+                .max_y = end_y - 1,
+            };
+            
+            index++;
+            
+            last_x = end_x;
+        }
+        last_y = end_y;
+    }
 }
 
 int render_scene(ProgramState* state) {
@@ -394,9 +512,7 @@ int render_scene(ProgramState* state) {
     
     auto proj_matrix = calculate_projection_matrix(state);
     
-    state->dmir_renderer->framebuffer = state->dmir_framebuffer;
-    state->dmir_renderer->batcher = state->dmir_batcher;
-    state->dmir_renderer->rect = state->viewport;
+    setup_renderers(state);
     
     // The supposed sequence of operations for rendering:
     // 1. dmir_framebuffer_clear
@@ -468,6 +584,8 @@ int main(int argc, char* argv[]) {
     }
     
     ProgramState state = {
+        .thread_case = 0,
+        .thread_count = 1,
         .screen_width = 640,
         .screen_height = 480,
         .is_running = true,
@@ -520,7 +638,11 @@ int main(int argc, char* argv[]) {
     
     state.dmir_framebuffer = dmir_framebuffer_make(state.screen_width, state.screen_height);
     state.dmir_batcher = dmir_batcher_make();
-    state.dmir_renderer = dmir_renderer_make();
+    
+    for (int i = 0; i < 16; i++) {
+        auto dmir_renderer = dmir_renderer_make();
+        state.dmir_renderers.push_back(dmir_renderer);
+    }
     
     DMirOctree* file_octree = nullptr;
     if (argc != 2) {
@@ -567,7 +689,9 @@ int main(int argc, char* argv[]) {
             accum_time = 0;
             accum_count = 0;
             
-            std::string title = window_title + ": " + std::to_string(frame_time) + " ms";
+            std::string title = window_title + ": " +
+                std::to_string(frame_time) + " ms, " +
+                std::to_string(state.thread_count) + " thread(s)";
             SDL_SetWindowTitle(state.window, title.c_str());
         }
         
@@ -586,7 +710,11 @@ int main(int argc, char* argv[]) {
         delete_octree(state.octrees[index]);
     }
     
-    dmir_renderer_free(state.dmir_renderer);
+    for (int i = 0; i < state.dmir_renderers.size(); i++) {
+        auto dmir_renderer = state.dmir_renderers[i];
+        dmir_renderer_free(dmir_renderer);
+    }
+    
     dmir_batcher_free(state.dmir_batcher);
     dmir_framebuffer_free(state.dmir_framebuffer);
     

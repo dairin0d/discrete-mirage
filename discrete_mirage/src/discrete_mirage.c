@@ -1622,8 +1622,8 @@ void dmir_framebuffer_resize(Framebuffer* framebuffer_ptr, uint32_t size_x, uint
     framebuffer->api.stencil_count_y = (size_y + (STENCIL_SIZE_Y - 1)) >> STENCIL_SHIFT_Y;
     framebuffer->stencil_row_shift = pow2_ceil(framebuffer->api.stencil_count_x);
     #else
-    framebuffer->api.stencil_size_x = 0;
-    framebuffer->api.stencil_size_y = 0;
+    framebuffer->api.stencil_size_x = 1;
+    framebuffer->api.stencil_size_y = 1;
     framebuffer->api.stencil_count_x = 0;
     framebuffer->api.stencil_count_y = 0;
     framebuffer->stencil_row_shift = 0;
@@ -2426,6 +2426,8 @@ void dmir_renderer_draw(Renderer* renderer_ptr) {
     RendererInternal* renderer = (RendererInternal*)renderer_ptr;
     FramebufferInternal* framebuffer = (FramebufferInternal*)renderer->api.framebuffer;
     BatcherInternal* batcher = (BatcherInternal*)renderer->api.batcher;
+    
+    if (!framebuffer || !batcher) return;
     
     SInt size_x = renderer->api.rect.max_x - renderer->api.rect.min_x + 1;
     SInt size_y = renderer->api.rect.max_y - renderer->api.rect.min_y + 1;
