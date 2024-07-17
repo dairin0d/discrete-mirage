@@ -16,8 +16,6 @@
 // * Tab - depth visualization mode
 // * Esc - quit
 
-// NOTE: multithreaded mode can segfault, not sure why
-
 #include <string>
 #include <stdint.h>
 #include <vector>

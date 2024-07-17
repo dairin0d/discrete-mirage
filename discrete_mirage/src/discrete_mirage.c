@@ -1037,7 +1037,8 @@ void calculate_maps(MapInfo* map, Queue* queues_forward,
     map->size64 = -1;
     return;
     #else
-    MAX_UPDATE(dilation, 0);
+    // Overflow can cause problems
+    dilation = CLAMP(dilation, 0, (ORTHO_MAX_SIZE << SUBPIXEL_BITS));
     
     // Expand the "use map" size by the dilation at pixel level
     SInt pixel_dilation_size = COORD_TO_PIXEL(dilation * 2);
@@ -1097,6 +1098,11 @@ void calculate_maps(MapInfo* map, Queue* queues_forward,
         SInt max8_x = (center8_x + extent8_x) >> map->shift;
         SInt max8_y = (center8_y + extent8_y) >> map->shift;
         
+        // MAX_UPDATE(min8_x, 1);
+        // MAX_UPDATE(min8_y, 1);
+        // MIN_UPDATE(max8_x, (MAP_SIZE-2));
+        // MIN_UPDATE(max8_y, (MAP_SIZE-2));
+        
         uint8_t mask8 = (uint8_t)(1 << octant8);
         
         for (SInt x = min8_x; x <= max8_x; x++) {
@@ -1114,6 +1120,11 @@ void calculate_maps(MapInfo* map, Queue* queues_forward,
             SInt min64_y = (center64_y - extent64_y) >> map->shift;
             SInt max64_x = (center64_x + extent64_x) >> map->shift;
             SInt max64_y = (center64_y + extent64_y) >> map->shift;
+            
+            // MAX_UPDATE(min64_x, 1);
+            // MAX_UPDATE(min64_y, 1);
+            // MIN_UPDATE(max64_x, (MAP_SIZE-2));
+            // MIN_UPDATE(max64_y, (MAP_SIZE-2));
             
             uint64_t mask64 = (1UL << octant64) << (octant8 * 8);
             
@@ -1903,7 +1914,7 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer_ptr,
         
         SInt intersects_eye_plane = (bounds.min_z <= batcher->eye_z);
         
-        if (!intersects_near_plane) {
+        if (!intersects_near_plane & (effects.dilation_rel > 0)) {
             float bounds_size_x = bounds.max_x - bounds.min_x;
             float bounds_size_y = bounds.max_y - bounds.min_y;
             float bounds_size_max = MAX(bounds_size_x, bounds_size_y);
@@ -2269,6 +2280,11 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
     frustum_bounds.min_y = viewport.min_y;
     frustum_bounds.max_y = viewport.max_y + 1;
     
+    SInt viewport_size_x = viewport.max_x - viewport.min_x + 1;
+    SInt viewport_size_y = viewport.max_y - viewport.min_y + 1;
+    SInt max_splat_size = MAX(viewport_size_x, viewport_size_y) / 2;
+    float max_splat_distortion = max_splat_size * 0.25f;
+    
     uint32_t address = subtree->address;
     SInt mask = *PTR_INDEX(octree->mask, address);
     uint32_t child_start = *PTR_INDEX(octree->addr, address);
@@ -2320,7 +2336,7 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
         
         SInt intersects_eye_plane = (bounds.min_z <= batcher->eye_z);
         
-        if (!intersects_near_plane) {
+        if (!intersects_near_plane & (effects.dilation_rel > 0)) {
             float bounds_size_x = bounds.max_x - bounds.min_x;
             float bounds_size_y = bounds.max_y - bounds.min_y;
             float bounds_size_max = MAX(bounds_size_x, bounds_size_y);
@@ -2392,9 +2408,18 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
         #ifdef DMIR_USE_ORTHO
         SInt is_subtree = is_pixel | is_splat;
         float projection_distortion = 0;
-        if ((!intersects_eye_plane) & (size_max < ORTHO_MAX_SIZE)) {
+        // Don't calculate distortion if it's already a pixel or a leaf
+        if (!is_subtree & !intersects_eye_plane & (size_max < ORTHO_MAX_SIZE)) {
             projection_distortion = calculate_projection_distortion(stack->grid);
             is_subtree |= (projection_distortion < batcher->api.ortho_distortion);
+        } else if (is_splat & (size_max > max_splat_size)) {
+            // If a splat is big and has significant distortion,
+            // it's likely too close and has wildly inaccurate bounds
+            // (too large sizes can also cause problems with map mode,
+            // which can lead to segfaults or endless cycles)
+            projection_distortion = calculate_projection_distortion(stack->grid);
+            if (projection_distortion > max_splat_distortion) continue;
+            projection_distortion = 0;
         }
         
         if (is_subtree) {
