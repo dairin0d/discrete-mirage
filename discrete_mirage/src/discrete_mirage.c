@@ -301,7 +301,6 @@ typedef struct OrthoStackItem {
 
 typedef struct OrthoStackItemAlt {
     Rect rect;
-    // int32_t max_size;
     Vector3S position;
     uint32_t address;
     int32_t level;
@@ -1557,10 +1556,6 @@ Framebuffer* dmir_framebuffer_make(uint32_t size_x, uint32_t size_y) {
         framebuffer->stencil_y_base = NULL;
         framebuffer->stencil_x = NULL;
         framebuffer->stencil_y = NULL;
-        framebuffer->api.stencil_size_x = 0;
-        framebuffer->api.stencil_size_y = 0;
-        framebuffer->api.stencil_count_x = 0;
-        framebuffer->api.stencil_count_y = 0;
         
         dmir_framebuffer_resize((Framebuffer*)framebuffer, size_x, size_y);
     }
@@ -2087,6 +2082,14 @@ void dmir_batcher_affine_get(Batcher* batcher_ptr, AffineInfo** affine_infos, ui
     BatcherInternal* batcher = (BatcherInternal*)batcher_ptr;
     *affine_infos = batcher->affine;
     *count = batcher->affine_count;
+}
+
+Depth dmir_z_to_depth(Batcher* batcher_ptr, float z) {
+    BatcherInternal* batcher = (BatcherInternal*)batcher_ptr;
+    #ifdef DMIR_DEPTH_INT32
+    z = CLAMP(z, batcher->api.frustum.min_depth, batcher->api.frustum.max_depth);
+    #endif
+    return z_to_depth(batcher, z);
 }
 
 Renderer* dmir_renderer_make() {

@@ -514,16 +514,6 @@ int render_scene(ProgramState* state) {
     
     setup_renderers(state);
     
-    // The supposed sequence of operations for rendering:
-    // 1. dmir_framebuffer_clear
-    // 2. dmir_batcher_reset
-    // 3. for each batch that you want to render:
-    //    3.1. for each object in the batch:
-    //         3.1.1. dmir_batcher_add
-    //    3.2. dmir_batcher_sort
-    //    3.3. dmir_renderer_draw
-    // 4. dmir_batcher_affine_get
-    
     dmir_framebuffer_clear(state->dmir_framebuffer);
     
     dmir_batcher_reset(state->dmir_batcher, state->viewport, state->frustum);
