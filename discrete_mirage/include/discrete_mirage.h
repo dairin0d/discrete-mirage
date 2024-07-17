@@ -95,6 +95,10 @@ const char DMIR_VERSION[] = "proto-1.0.0";
 #define DMIR_STENCIL_EXACT
 // #define DMIR_STENCIL_COARSE
 
+// Whether to clear the self-occlusion stencil buffer
+// after rendering each subtree
+#define DMIR_CLEAR_SELF_STENCIL
+
 // ===================================================== //
 
 // These options deal with how nodes are drawn / splatted

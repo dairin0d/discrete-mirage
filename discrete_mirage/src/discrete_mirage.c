@@ -319,6 +319,7 @@ typedef struct Subtree {
     uint32_t address;
     Effects effects;
     Bounds bounds;
+    Rect rect;
     SInt next;
 } Subtree;
 
@@ -1964,6 +1965,7 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer_ptr,
                 Subtree* subtree = batcher_add_subtree(batcher);
                 subtree->affine_id = stack->affine_id;
                 subtree->bounds = bounds;
+                subtree->rect = rect;
                 cage_from_grid(stack->grid, subtree->cage);
                 subtree->address = address;
                 subtree->effects = effects;
@@ -2153,6 +2155,7 @@ void write_fragments(RendererInternal* renderer, FramebufferInternal* framebuffe
     for (Fragment* fragment = renderer->fragments; fragment != fragments[0]; fragment++) {
         #if STENCIL_BITS > 0
         {
+            #ifdef DMIR_CLEAR_SELF_STENCIL
             // We need to clear self-stencil even if fragments are rejected by depth
             SInt tx = fragment->x >> STENCIL_SHIFT_X;
             SInt ty = fragment->y >> STENCIL_SHIFT_Y;
@@ -2168,10 +2171,12 @@ void write_fragments(RendererInternal* renderer, FramebufferInternal* framebuffe
                 }
                 tile_tail = ti;
             }
+            #endif
             
             SInt i = PIXEL_INDEX(framebuffer, fragment->x, fragment->y);
             if (!(fragment->z < framebuffer->api.depth[i])) continue;
             
+            #ifdef DMIR_CLEAR_SELF_STENCIL
             // Skip the max depth recalculation if the pixel we're about to
             // overwrite had the default depth or is not at tile's max depth
             if (framebuffer->api.depth[i] == DMIR_MAX_DEPTH) {
@@ -2181,6 +2186,7 @@ void write_fragments(RendererInternal* renderer, FramebufferInternal* framebuffe
             } else if (framebuffer->api.depth[i] == tile->depth) {
                 STENCIL_UPDATE_DEPTH_SET(tile);
             }
+            #endif
             
             framebuffer->api.depth[i] = fragment->z;
         }
@@ -2192,7 +2198,7 @@ void write_fragments(RendererInternal* renderer, FramebufferInternal* framebuffe
         }
     }
     
-    #if STENCIL_BITS > 0
+    #if (STENCIL_BITS > 0) && defined(DMIR_CLEAR_SELF_STENCIL)
     SInt stencil_row_shift = framebuffer->stencil_row_shift;
     SInt stencil_row_mask = (1 << stencil_row_shift) - 1;
     
@@ -2216,6 +2222,22 @@ void write_fragments(RendererInternal* renderer, FramebufferInternal* framebuffe
         tiles[ti].update = 0;
     }
     #endif
+}
+
+void clear_self_stencil(FramebufferInternal* framebuffer, Rect* rect) {
+    SInt min_tx = rect->min_x & ~STENCIL_MASK_X;
+    SInt max_tx = rect->max_x & ~STENCIL_MASK_X;
+    SInt min_ty = rect->min_y & ~STENCIL_MASK_Y;
+    SInt max_ty = rect->max_y & ~STENCIL_MASK_Y;
+    SInt tile_col = min_tx >> STENCIL_SHIFT_X;
+    SInt tile_row = min_ty >> STENCIL_SHIFT_Y;
+    for (SInt ty = min_ty; ty <= max_ty; ty += STENCIL_SIZE_Y, tile_row++) {
+        StencilTile* tile = framebuffer->stencil_tiles +
+            (tile_col + (tile_row << framebuffer->stencil_row_shift));
+        for (SInt tx = min_tx; tx <= max_tx; tx += STENCIL_SIZE_X, tile++) {
+            tile->self = STENCIL_CLEAR;
+        }
+    }
 }
 
 void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
@@ -2421,6 +2443,8 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
     
     #ifdef DMIR_USE_SPLAT_DEFERRED
     write_fragments(renderer, framebuffer, fragments, affine_id, octree);
+    #elif (STENCIL_BITS > 0) && defined(DMIR_CLEAR_SELF_STENCIL)
+    clear_self_stencil(framebuffer, &subtree->rect);
     #endif
 }
 
