@@ -563,10 +563,10 @@ static inline SInt is_occluded_quad(FramebufferInternal* framebuffer, Rect* rect
     MAX_UPDATE((rect).max_y, (other).max_y);\
 }
 #define RECT_FROM_BOUNDS(rect, bounds, dilation) {\
-    (rect).min_x = (int32_t)((bounds).min_x - (dilation));\
-    (rect).max_x = (int32_t)((bounds).max_x + (dilation));\
-    (rect).min_y = (int32_t)((bounds).min_y - (dilation));\
-    (rect).max_y = (int32_t)((bounds).max_y + (dilation));\
+    (rect).min_x = (int32_t)CLAMP((bounds).min_x - (dilation), (INT32_MIN >> 2), (INT32_MAX >> 2));\
+    (rect).max_x = (int32_t)CLAMP((bounds).max_x + (dilation), (INT32_MIN >> 2), (INT32_MAX >> 2));\
+    (rect).min_y = (int32_t)CLAMP((bounds).min_y - (dilation), (INT32_MIN >> 2), (INT32_MAX >> 2));\
+    (rect).max_y = (int32_t)CLAMP((bounds).max_y + (dilation), (INT32_MIN >> 2), (INT32_MAX >> 2));\
 }
 
 static inline void project(ProjectedVertex* vertex, BatcherInternal* batcher) {
@@ -1845,8 +1845,9 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer_ptr,
     SInt viewport_size_x = viewport.max_x - viewport.min_x + 1;
     SInt viewport_size_y = viewport.max_y - viewport.min_y + 1;
     SInt viewport_size_max = MAX(viewport_size_x, viewport_size_y);
-    float split_size = batcher->api.split_factor * viewport_size_max;
-    SInt max_subtree_size = (SInt)CLAMP(split_size, 0, INT32_MAX);
+    // Limit split_factor to a sane range, to avoid the
+    // "too inaccurate cage projection" glitches
+    SInt max_subtree_size = (SInt)(CLAMP(batcher->api.split_factor, 0, 100) * viewport_size_max);
     MAX_UPDATE(max_subtree_size, (SInt)(effects.dilation_abs * 2 + 1));
     
     uint32_t address = root;
@@ -1897,9 +1898,7 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer_ptr,
         
         SInt intersects_eye_plane = (bounds.min_z <= batcher->eye_z);
         
-        if (intersects_eye_plane) {
-            RECT_CLIP(bounds, frustum_bounds);
-        } else if (!intersects_near_plane) {
+        if (!intersects_near_plane) {
             float bounds_size_x = bounds.max_x - bounds.min_x;
             float bounds_size_y = bounds.max_y - bounds.min_y;
             float bounds_size_max = MAX(bounds_size_x, bounds_size_y);
@@ -1908,6 +1907,7 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer_ptr,
         }
         
         // Calculate screen-space bounds (in pixels)
+        // (clamps to a sane range if values are too big)
         Rect rect;
         RECT_FROM_BOUNDS(rect, bounds, dilation);
         
@@ -2293,9 +2293,7 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
         
         SInt intersects_eye_plane = (bounds.min_z <= batcher->eye_z);
         
-        if (intersects_eye_plane) {
-            RECT_CLIP(bounds, frustum_bounds);
-        } else if (!intersects_near_plane) {
+        if (!intersects_near_plane) {
             float bounds_size_x = bounds.max_x - bounds.min_x;
             float bounds_size_y = bounds.max_y - bounds.min_y;
             float bounds_size_max = MAX(bounds_size_x, bounds_size_y);
@@ -2304,6 +2302,7 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
         }
         
         // Calculate screen-space bounds (in pixels)
+        // (clamps to a sane range if values are too big)
         Rect rect;
         RECT_FROM_BOUNDS(rect, bounds, dilation);
         
