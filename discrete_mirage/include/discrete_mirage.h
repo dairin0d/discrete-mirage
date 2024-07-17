@@ -121,6 +121,11 @@ const char DMIR_VERSION[] = "proto-1.0.0";
 // node centers, when reaching <= 2x2 px node size
 // #define DMIR_USE_BLIT_AT_2X2
 
+// This determines the size (resolution) of octant and
+// sub-octant maps (specified as a power-of-2)
+// Note: maps also require DMIR_COORD_FIXED to be used
+#define DMIR_MAP_PRECISION 6
+
 // Use a precalculated octant map at <= 2x2 px node size
 #define DMIR_USE_MAP_2
 
@@ -132,10 +137,6 @@ const char DMIR_VERSION[] = "proto-1.0.0";
 
 // Use a precalculated sub-octant map at <= 4x4 px node size
 #define DMIR_USE_MAP_4
-
-// This determines the size (resolution) of octant and
-// sub-octant maps (specified as a power-of-2)
-#define DMIR_MAP_PRECISION 6
 
 // This imitates the effect of "drawing subnodes as pixels"
 // by enlarging their extents to always cover a pixel
