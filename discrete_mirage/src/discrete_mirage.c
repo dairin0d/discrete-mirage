@@ -1025,14 +1025,13 @@ typedef struct MapInfo {
 void calculate_maps(MapInfo* map, Queue* queues_forward,
     Vector3S* deltas, Vector3S extent, Coord dilation, SInt max_level)
 {
+    #if MAP_SIZE <= 8
     // Don't use map if it's too small or disabled
-    if (MAP_SIZE <= 8) {
-        map->size8 = -1;
-        map->size36 = -1;
-        map->size64 = -1;
-        return;
-    }
-    
+    map->size8 = -1;
+    map->size36 = -1;
+    map->size64 = -1;
+    return;
+    #else
     MAX_UPDATE(dilation, 0);
     
     // Expand the "use map" size by the dilation at pixel level
@@ -1132,6 +1131,7 @@ void calculate_maps(MapInfo* map, Queue* queues_forward,
         if ((item & 2) == 0) map->mask_bit1 |= octant_mask;
         if ((item & 4) == 0) map->mask_bit2 |= octant_mask;
     }
+    #endif
 }
 
 static inline SInt render_ortho_cull_draw(
