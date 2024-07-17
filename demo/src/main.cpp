@@ -12,6 +12,7 @@
 // * Space - Switch between perspective and orthographic
 // * < and > - change perspective FOV
 // * { and } - increase/decrease number of threads
+// * - and + - change the max octree descent level
 // * Tab - depth visualization mode
 // * Esc - quit
 
@@ -67,6 +68,8 @@ struct ProgramState {
     
     DMirRect viewport;
     DMirFrustum frustum;
+    
+    int max_level;
     
     std::vector<Object3D*> objects;
     std::vector<DMirOctree*> octrees;
@@ -283,6 +286,14 @@ int process_event(void* data, SDL_Event* event) {
             state->thread_case += 1;
             if (state->thread_case > 8) state->thread_case = 8;
             break;
+        case SDLK_MINUS:
+            state->max_level -= 1;
+            if (state->max_level < -1) state->max_level = 16;
+            break;
+        case SDLK_EQUALS:
+            state->max_level += 1;
+            if (state->max_level > 16) state->max_level = -1;
+            break;
         case SDLK_TAB:
             state->is_depth_mode = !state->is_depth_mode;
             break;
@@ -404,9 +415,14 @@ void render_scene_subset(ProgramState* state, struct mat4 proj_matrix, int imin,
             cage[octant] = transform_vec3(&object3d->cage[octant], &matrix);
         }
         
+        DMirEffects effects = object3d->effects;
+        if ((effects.max_level < 0) || (effects.max_level > state->max_level)) {
+            effects.max_level = state->max_level;
+        }
+        
         int group = index;
         dmir_batcher_add(state->dmir_batcher, state->dmir_framebuffer,
-            group, (float*)cage, object3d->octree, object3d->root, object3d->effects);
+            group, (float*)cage, object3d->octree, object3d->root, effects);
     }
     
     dmir_batcher_sort(state->dmir_batcher);
@@ -584,6 +600,7 @@ int main(int argc, char* argv[]) {
         .cam_scl = svec3(1, 1, 1),
         .cam_zoom = -4,
         .cam_zoom_fov = 0,
+        .max_level = -1,
     };
     
     std::string window_title = "Discrete Mirage";
