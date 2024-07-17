@@ -252,8 +252,23 @@ void reinit_renderer(ProgramState* state) {
         state->screen_height);
 }
 
+void print_state_info(ProgramState* state) {
+    std::cout
+        << "x: " << state->cam_pos.x << ", "
+        << "y: " << state->cam_pos.y << ", "
+        << "z: " << state->cam_pos.z << ", "
+        << "rx: " << state->cam_rot.x << ", "
+        << "ry: " << state->cam_rot.y << ", "
+        << "zoom: " << state->cam_zoom << ", "
+        << "fov: " << state->cam_zoom_fov << ", "
+        << "persp: " << state->frustum.perspective
+        << std::endl;
+}
+
 int process_event(void* data, SDL_Event* event) {
     ProgramState* state = (ProgramState*)data;
+    
+    bool cam_updated = false;
     
     if (event->type == SDL_WINDOWEVENT) {
         if (event->window.event == SDL_WINDOWEVENT_RESIZED) {
@@ -271,12 +286,15 @@ int process_event(void* data, SDL_Event* event) {
             break;
         case SDLK_SPACE:
             state->frustum.perspective = (state->frustum.perspective > 0.5f ? 0 : 1);
+            cam_updated = true;
             break;
         case SDLK_COMMA:
             state->cam_zoom_fov -= 1;
+            cam_updated = true;
             break;
         case SDLK_PERIOD:
             state->cam_zoom_fov += 1;
+            cam_updated = true;
             break;
         case SDLK_LEFTBRACKET:
             state->thread_case -= 1;
@@ -308,12 +326,17 @@ int process_event(void* data, SDL_Event* event) {
         }
     } else if (event->type == SDL_MOUSEWHEEL) {
         state->cam_zoom += event->wheel.y;
+        cam_updated = true;
     } else if (event->type == SDL_MOUSEMOTION) {
         if (state->is_cam_orbiting) {
             state->cam_rot.y += event->motion.xrel * 0.005f;
             state->cam_rot.x += event->motion.yrel * 0.005f;
+            cam_updated = true;
         }
     }
+    
+    if (cam_updated) print_state_info(state);
+    
     return 0;
 }
 
@@ -332,24 +355,33 @@ void process_continuous_events(ProgramState* state) {
         speed *= 10;
     }
     
+    bool cam_updated = false;
     if (currentKeyStates[SDL_SCANCODE_D]) {
         state->cam_pos = svec3_add(state->cam_pos, svec3_multiply_f(view_x_axis, speed));
+        cam_updated = true;
     }
     if(currentKeyStates[SDL_SCANCODE_A]) {
         state->cam_pos = svec3_add(state->cam_pos, svec3_multiply_f(view_x_axis, -speed));
+        cam_updated = true;
     }
     if(currentKeyStates[SDL_SCANCODE_R]) {
         state->cam_pos = svec3_add(state->cam_pos, svec3_multiply_f(view_y_axis, speed));
+        cam_updated = true;
     }
     if(currentKeyStates[SDL_SCANCODE_F]) {
         state->cam_pos = svec3_add(state->cam_pos, svec3_multiply_f(view_y_axis, -speed));
+        cam_updated = true;
     }
     if(currentKeyStates[SDL_SCANCODE_W]) {
         state->cam_pos = svec3_add(state->cam_pos, svec3_multiply_f(view_z_axis, speed));
+        cam_updated = true;
     }
     if(currentKeyStates[SDL_SCANCODE_S]) {
         state->cam_pos = svec3_add(state->cam_pos, svec3_multiply_f(view_z_axis, -speed));
+        cam_updated = true;
     }
+    
+    if (cam_updated) print_state_info(state);
 }
 
 void create_scene(ProgramState* state, DMirOctree* file_octree) {
