@@ -186,6 +186,10 @@ typedef uint32_t Stencil;
     (tile)->update = ((tile)->update & ~STENCIL_UPDATE_NEXT) | (value & STENCIL_UPDATE_NEXT);\
 }
 
+#define STENCIL_UPDATE_DEPTH_UNSET(tile) {\
+    (tile)->update &= ~STENCIL_UPDATE_DEPTH;\
+}
+
 #if defined(DMIR_ORTHO_TRAVERSE_ALT) && defined(DMIR_DEPTH_INT32) && defined(DMIR_COORD_FIXED)
 #define ORTHO_TRAVERSE_ALT
 #endif
@@ -2182,6 +2186,7 @@ void write_fragments(RendererInternal* renderer, FramebufferInternal* framebuffe
             if (framebuffer->api.depth[i] == DMIR_MAX_DEPTH) {
                 if ((tile->depth == DMIR_MAX_DEPTH) | (fragment->z > tile->depth)) {
                     tile->depth = fragment->z;
+                    STENCIL_UPDATE_DEPTH_UNSET(tile);
                 }
             } else if (framebuffer->api.depth[i] == tile->depth) {
                 STENCIL_UPDATE_DEPTH_SET(tile);
