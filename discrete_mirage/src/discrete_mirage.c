@@ -2437,8 +2437,8 @@ void dmir_renderer_draw(Renderer* renderer_ptr) {
     SInt rect_area = size_x * size_y;
     if (rect_area > renderer->fragments_size) {
         renderer->fragments_size = 1 << pow2_ceil(rect_area);
-        SInt size_in_bytes = renderer->fragments_size * sizeof(Fragment);
-        renderer->fragments = realloc(renderer->fragments, size_in_bytes);
+        if (renderer->fragments) free(renderer->fragments);
+        renderer->fragments = malloc(renderer->fragments_size * sizeof(Fragment));
     }
     
     Subtree* subtrees = batcher->subtrees;
