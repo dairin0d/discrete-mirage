@@ -890,8 +890,8 @@ static inline void add_fragment(Fragment** fragments, SInt x, SInt y, Depth dept
 }
 #endif
 #else
-#define SPLAT(framebuffer, fragments, x, y, depth, affine_id, address, octree) {\
-    CHECK_AND_WRITE_DEPTH(framebuffer, x, y, depth);\
+#define SPLAT(framebuffer, fragments, x, y, depth, affine_id, address, octree, stop) {\
+    CHECK_AND_WRITE_DEPTH(framebuffer, x, y, depth, stop);\
     {\
         SInt i = PIXEL_INDEX(framebuffer, x, y);\
         write_pixel(framebuffer, i, affine_id, address, octree);\
