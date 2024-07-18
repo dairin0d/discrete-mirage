@@ -63,7 +63,8 @@ const char DMIR_VERSION[] = "proto-1.0.0";
 // exclusive in this library and are never used together)
 #define DMIR_USE_ORTHO
 
-// Whether to use an alternative method for octree
+// Whether to use the default ("parent-on-stack") or
+// an alternative ("children-on-stack") method for octree
 // traversal during the orthographic-mode rendering
 // #define DMIR_ORTHO_TRAVERSE_ALT
 

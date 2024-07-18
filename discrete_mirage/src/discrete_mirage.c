@@ -1347,6 +1347,7 @@ static inline SInt render_ortho_cull_draw(
     return FALSE;
 }
 
+// Uses "parent-on-stack" octree traversal
 void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
     FramebufferInternal* framebuffer, Fragment** fragments,
     uint32_t affine_id, Octree* octree, uint32_t address, Effects effects,
@@ -1461,6 +1462,7 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
 }
 
 #ifdef ORTHO_TRAVERSE_ALT
+// Uses "children-on-stack" octree traversal
 void render_ortho_alt(RendererInternal* renderer, BatcherInternal* batcher,
     FramebufferInternal* framebuffer, Fragment** fragments,
     uint32_t affine_id, Octree* octree, uint32_t subroot, Effects effects,
