@@ -37,6 +37,8 @@ struct Object3D {
     int root;
     DMirEffects effects;
     
+    bool hide;
+    
     struct vec3 position;
     struct quat rotation;
     struct vec3 scale;
@@ -402,6 +404,7 @@ void create_scene(ProgramState* state, DMirOctree* file_octree) {
             auto object3d = new Object3D();
             object3d->octree = octree;
             object3d->root = 0;
+            object3d->hide = false;
             object3d->effects = {.max_level = -1, .dilation_abs = 0, .dilation_rel = 0};
             object3d->position = svec3(gx * grid_offset, 0, gz * grid_offset);
             object3d->rotation = squat_null();
@@ -440,6 +443,8 @@ void render_scene_subset(ProgramState* state, struct mat4 proj_matrix, int imin,
     
     for (int index = imin; index <= imax; index++) {
         auto object3d = state->objects[index];
+        if (object3d->hide) continue;
+        
         auto matrix = trs_matrix(object3d->position, object3d->rotation, object3d->scale);
         psmat4_multiply(&matrix, &proj_matrix, &matrix);
         
