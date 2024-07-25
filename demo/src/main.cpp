@@ -14,6 +14,7 @@
 // * { and } - increase/decrease number of threads
 // * - and + - change the max octree descent level
 // * Tab - depth visualization mode
+// * F12 - toggle "antialiasing/motion-blur" mode
 // * Esc - quit
 
 #include <string>
@@ -75,6 +76,15 @@ struct ProgramState {
     
     std::vector<Object3D*> objects;
     std::vector<DMirOctree*> octrees;
+    
+    bool use_accumulation;
+    int accum_count;
+    int accum_shift;
+    int accum_index;
+    std::vector<struct vec2> accum_offsets;
+    std::vector<DMirColor*> accum_buffers;
+    int* accum_weights_lin;
+    int* accum_weights_exp;
 };
 
 const int OCTREE_LOAD_RAW = 0;
@@ -317,6 +327,9 @@ int process_event(void* data, SDL_Event* event) {
         case SDLK_TAB:
             state->is_depth_mode = !state->is_depth_mode;
             break;
+        case SDLK_F12:
+            state->use_accumulation = !state->use_accumulation;
+            break;
         }
     } else if (event->type == SDL_MOUSEBUTTONDOWN) {
         if (event->button.button == SDL_BUTTON_LEFT) {
@@ -441,6 +454,10 @@ void render_scene_subset(ProgramState* state, struct mat4 proj_matrix, int imin,
     if (imin < 0) imin = 0;
     if (imax >= state->objects.size()) imax = state->objects.size() - 1;
     
+    auto axis = svec3(0, 1, 0);
+    auto angle = SDL_GetTicks() * 0.0025f;
+    state->objects[0]->rotation = squat_from_axis_angle(axis, angle);
+    
     for (int index = imin; index <= imax; index++) {
         auto object3d = state->objects[index];
         if (object3d->hide) continue;
@@ -563,6 +580,12 @@ int render_scene(ProgramState* state) {
     
     int time = SDL_GetTicks();
     
+    if (state->use_accumulation) {
+        auto accum_offset = state->accum_offsets[state->accum_index];
+        state->frustum.offset_x = accum_offset.x;
+        state->frustum.offset_y = accum_offset.y;
+    }
+    
     auto proj_matrix = calculate_projection_matrix(state);
     
     setup_renderers(state);
@@ -577,45 +600,118 @@ int render_scene(ProgramState* state) {
     uint32_t affine_count;
     dmir_batcher_affine_get(state->dmir_batcher, &affine_infos, &affine_count);
     
+    int accum_bias = (1 << state->accum_shift) >> 1;
+    auto rows_start = std::vector<DMirColor*>{};
+    rows_start.reserve(state->accum_count);
+    auto rows_y = std::vector<DMirColor*>{};
+    rows_y.reserve(state->accum_count);
+    for (int j = 0; j < state->accum_count; j++) {
+        int buf_index = (state->accum_index - j + state->accum_count) % state->accum_count;
+        auto accum_buf = state->accum_buffers[buf_index];
+        rows_start.push_back(accum_buf);
+        rows_y.push_back(accum_buf);
+    }
+    
     int buf_stride = dmir_row_size(state->dmir_framebuffer);
-    DMirColor* colors = (DMirColor*)pixels;
     for (int y = 0; y < state->screen_height; y++) {
-        int buf_row = y * buf_stride;
         int rev_y = (state->screen_height - 1 - y);
-        DMirColor* colors_row = (DMirColor*)((uint8_t*)pixels + rev_y * stride);
+        DMirColor* pixels_row = (DMirColor*)((uint8_t*)pixels + rev_y * stride);
+        
+        int buf_row = y * buf_stride;
         DMirDepth* depths_row = state->dmir_framebuffer->depth + buf_row;
         DMirVoxelRef* voxels_row = state->dmir_framebuffer->voxel + buf_row;
+        
+        for (int j = 0; j < state->accum_count; j++) {
+            rows_y[j] = rows_start[j] + (y * state->screen_width);
+        }
+        auto rows = rows_y.data();
+        
         for (int x = 0; x < state->screen_width; x++) {
+            DMirColor color;
             if (state->is_depth_mode) {
                 #ifdef DMIR_DEPTH_INT32
-                colors_row[x].g = depths_row[x] >> 18;
+                color.g = depths_row[x] >> 18;
                 #else
-                colors_row[x].g = (int)(8 * 255 * depths_row[x] / state->frustum.max_depth);
+                color.g = (int)(8 * 255 * depths_row[x] / state->frustum.max_depth);
                 #endif
-                colors_row[x].r = colors_row[x].g;
-                colors_row[x].b = colors_row[x].g;
+                color.r = color.g;
+                color.b = color.g;
             } else {
                 #ifdef DMIR_USE_SPLAT_COLOR
-                colors_row[x] = state->dmir_framebuffer->color[buf_row+x];
+                color = state->dmir_framebuffer->color[buf_row+x];
                 #else
                 if (voxels_row[x].affine_id < 0) {
-                    colors_row[x] = {.r = 0, .g = 196, .b = 255};
+                    color = {.r = 0, .g = 196, .b = 255};
                 } else {
                     auto affine_info = &affine_infos[voxels_row[x].affine_id];
                     auto octree = affine_info->octree;
                     uint8_t* data_ptr = PTR_INDEX(octree->data, voxels_row[x].address);
-                    colors_row[x] = *((DMirColor*)data_ptr);
+                    color = *((DMirColor*)data_ptr);
                 }
                 #endif
             }
+            
+            if (state->use_accumulation) {
+                int dr = color.r - rows[0][x].r;
+                int dg = color.g - rows[0][x].g;
+                int db = color.b - rows[0][x].b;
+                rows[0][x] = color;
+                
+                auto weights = ((dr|dg|db) == 0 ? state->accum_weights_lin : state->accum_weights_exp);
+                
+                dr = accum_bias;
+                dg = accum_bias;
+                db = accum_bias;
+                for (int j = 0; j < state->accum_count; j++) {
+                    dr += rows[j][x].r * weights[j];
+                    dg += rows[j][x].g * weights[j];
+                    db += rows[j][x].b * weights[j];
+                }
+                
+                pixels_row[x].r = dr >> state->accum_shift;
+                pixels_row[x].g = dg >> state->accum_shift;
+                pixels_row[x].b = db >> state->accum_shift;
+            } else {
+                pixels_row[x] = color;
+            }
         }
     }
+    
+    state->accum_index = (state->accum_index + 1) % state->accum_buffers.size();
     
     time = SDL_GetTicks() - time;
     
     SDL_UnlockTexture(state->texture);
     
     return time;
+}
+
+int* make_accum_weights(int count, float base, int denominator) {
+    auto fweights = new float[count];
+    auto iweights = new int[count];
+    
+    fweights[0] = base;
+    float fsum = fweights[0];
+    for (int i = 1; i < count; i++) {
+        fweights[i] = fweights[i-1] * base;
+        fsum += fweights[i];
+    }
+    
+    int isum = 0;
+    for (int i = 0; i < count; i++) {
+        iweights[i] = (int)(denominator * fweights[i] / fsum);
+        isum += iweights[i];
+    }
+    
+    int difference = denominator - isum;
+    for (int i = 0; (i < count) && (difference > 0); i++) {
+        iweights[i]++;
+        difference--;
+    }
+    
+    delete fweights;
+    
+    return iweights;
 }
 
 int main(int argc, char* argv[]) {
@@ -688,6 +784,20 @@ int main(int argc, char* argv[]) {
         state.dmir_renderers.push_back(dmir_renderer);
     }
     
+    state.accum_count = 4;
+    state.accum_index = 0;
+    for (int i = 0; i < state.accum_count; i++) {
+        auto acc_x = (((i >> 0) & 1) - 0.5f) * 0.5f;
+        auto acc_y = (((i >> 1) & 1) - 0.5f) * 0.5f;
+        state.accum_offsets.push_back(svec2(acc_x, acc_y));
+        auto accum_buf = new DMirColor[state.screen_width * state.screen_height];
+        state.accum_buffers.push_back(accum_buf);
+    }
+    
+    state.accum_shift = 16;
+    state.accum_weights_lin = make_accum_weights(state.accum_count, 1.0f, 1 << state.accum_shift);
+    state.accum_weights_exp = make_accum_weights(state.accum_count, 0.65f, 1 << state.accum_shift);
+    
     DMirOctree* file_octree = nullptr;
     if (argc != 2) {
         std::cerr << "Usage: " << argv[0] << " <file_path>" << std::endl;
@@ -748,6 +858,13 @@ int main(int argc, char* argv[]) {
         next_frame_update = time + frame_time_min;
         
         state.frame_count++;
+    }
+    
+    delete state.accum_weights_lin;
+    delete state.accum_weights_exp;
+    
+    for (int i = 0; i < state.accum_buffers.size(); i++) {
+        delete state.accum_buffers[i];
     }
     
     for (int index = 0; index < state.objects.size(); index++) {

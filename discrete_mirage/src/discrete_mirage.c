@@ -1764,8 +1764,8 @@ void dmir_batcher_reset(Batcher* batcher_ptr, Rect viewport, Frustum frustum) {
         batcher->scale_c = 1 - frustum.perspective;
         batcher->scale_z = frustum.perspective / frustum.focal_depth;
         
-        batcher->offset_x = viewport.min_x + half_x;
-        batcher->offset_y = viewport.min_y + half_y;
+        batcher->offset_x = viewport.min_x + half_x + frustum.offset_x;
+        batcher->offset_y = viewport.min_y + half_y + frustum.offset_y;
         
         batcher->eye_z = -batcher->scale_c / batcher->scale_z;
         batcher->is_perspective = (batcher->scale_z > 1e-16f) | (batcher->scale_z < -1e-16f);

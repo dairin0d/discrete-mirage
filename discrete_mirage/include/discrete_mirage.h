@@ -178,12 +178,15 @@ typedef struct DMirRect {
 // values in this range would interpolate between them.
 // Note that negative values are not accounted for, and
 // would probably result in undefined behavior.
+// The offset fields can be used for view jittering.
 typedef struct DMirFrustum {
     float min_depth;
     float max_depth;
     float focal_extent;
     float focal_depth;
     float perspective;
+    float offset_x;
+    float offset_y;
 } DMirFrustum;
 
 // addr: address (index) of a node's first child.
@@ -309,6 +312,8 @@ const struct DMirFrustum DMIR_FRUSTUM_DEFAULT = {
     .focal_extent = 1,
     .focal_depth = 1,
     .perspective = 0,
+    .offset_x = 0,
+    .offset_y = 0,
 };
 
 // ===================================================== //
