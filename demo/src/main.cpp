@@ -56,6 +56,8 @@ struct ProgramState {
     int screen_height;
     bool is_running;
     
+    int frame_count;
+    
     struct vec3 cam_pos;
     struct vec3 cam_rot;
     struct vec3 cam_scl;
@@ -700,6 +702,8 @@ int main(int argc, char* argv[]) {
     int accum_time = 0;
     int accum_count = 0;
     
+    state.frame_count = 0;
+    
     while (state.is_running) {
         SDL_PumpEvents();
         
@@ -737,6 +741,8 @@ int main(int argc, char* argv[]) {
             SDL_Delay(frame_remainder);
         }
         next_frame_update = time + frame_time_min;
+        
+        state.frame_count++;
     }
     
     for (int index = 0; index < state.objects.size(); index++) {
