@@ -1158,10 +1158,10 @@ static inline SInt render_ortho_cull_draw(
     Vector3S* position, Vector3S* extent,
     Rect* rect, Rect* clip_rect,
     uint32_t affine_id, uint32_t address,
-    SInt is_max_level,
+    SInt level, SInt max_level,
     uint8_t* mask, uint32_t* child_start,
     Queue* queues_forward, Vector3S* deltas,
-    MapInfo* map, uint32_t* indices, SInt level)
+    MapInfo* map, uint32_t* indices)
 {
     Depth depth = position->z - extent->z;
     
@@ -1201,10 +1201,16 @@ static inline SInt render_ortho_cull_draw(
     }
     #endif
     
-    *mask = *PTR_INDEX(octree->mask, address);
+    SInt is_splat = (size_max == 0) | (level == max_level);
+    
+    // Non-voxel data at max level might not actually be stored
+    if (!is_splat) {
+        *mask = *PTR_INDEX(octree->mask, address);
+        is_splat = !*mask;
+    }
     
     // Splat if this is a leaf node or reached max displayed level
-    if ((size_max == 0) | (!*mask) | is_max_level) {
+    if (is_splat) {
         if (depth < min_depth) return TRUE;
         
         for (SInt y = rect->min_y; y <= rect->max_y; y++) {
@@ -1298,7 +1304,7 @@ static inline SInt render_ortho_cull_draw(
             mask64 |= (mask8 ? mask8 : 255) << ((queue.octants & 7) * 8);
         }
         
-        SInt use_suboctants = (size_max >= map->size36);
+        SInt use_suboctants = (size_max >= map->size36) & (level != (max_level-1));
         
         Coord mx, my;
         SInt x, y;
@@ -1439,10 +1445,10 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
             &position, &stack->extent,
             &rect, &stack->rect,
             affine_id, address,
-            stack->level == effects.max_level,
+            stack->level, effects.max_level,
             &mask, &child_start,
             queues_forward, (stack+1)->deltas,
-            &map, indices, stack->level);
+            &map, indices);
         if (done) continue;
         
         // Push non-empty children on the stack
@@ -1534,10 +1540,10 @@ void render_ortho_alt(RendererInternal* renderer, BatcherInternal* batcher,
             &current.position, &current_extent,
             &rect, &current.rect,
             affine_id, current.address,
-            current.level == effects.max_level,
+            current.level, effects.max_level,
             &mask, &child_start,
             queues_forward, (deltas + (current.level * CAGE_SIZE)),
-            &map, indices, current.level);
+            &map, indices);
         if (done) continue;
         
         // Push non-empty children on the stack
@@ -1868,14 +1874,18 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer_ptr,
     SInt max_subtree_size = (SInt)(CLAMP(batcher->api.split_factor, 0, 100) * viewport_size_max);
     MAX_UPDATE(max_subtree_size, (SInt)(effects.dilation_abs * 2 + 1));
     
-    uint32_t address = root;
-    SInt mask = *PTR_INDEX(octree->mask, address);
-    uint32_t child_start = *PTR_INDEX(octree->addr, address);
-    
     stack->level = 0;
     stack->affine_id = -1;
     stack->rect = viewport;
     stack->is_behind = (bounds.min_z <= batcher->eye_z);
+    
+    uint32_t address = root;
+    SInt mask = 0;
+    uint32_t child_start = address;
+    if (stack->level != effects.max_level) {
+        mask = *PTR_INDEX(octree->mask, address);
+        child_start = *PTR_INDEX(octree->addr, address);
+    }
     
     Queue* queues = (octree->is_packed ? batcher->lookups->packed : batcher->lookups->sparse);
     
@@ -2014,13 +2024,16 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer_ptr,
         stack->is_behind = intersects_eye_plane;
         stack->affine_id = (stack-1)->affine_id;
         
+        SInt is_max_level = (stack->level == effects.max_level);
         Queue queue = queues_reverse[mask];
         for (; queue.indices != 0; queue.indices >>= 4, queue.octants >>= 4) {
             address = child_start + (queue.indices & 7);
             stack->octants[stack->count] = (queue.octants & 7);
             stack->addresses[stack->count] = address;
-            stack->subnodes[stack->count] = *PTR_INDEX(octree->addr, address);
-            stack->masks[stack->count] = *PTR_INDEX(octree->mask, address);
+            if (!is_max_level) {
+                stack->subnodes[stack->count] = *PTR_INDEX(octree->addr, address);
+                stack->masks[stack->count] = *PTR_INDEX(octree->mask, address);
+            }
             stack->count++;
         }
     } while (stack > stack_start);
@@ -2287,13 +2300,17 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
     SInt max_splat_size = MAX(viewport_size_x, viewport_size_y) / 2;
     float max_splat_distortion = max_splat_size * 0.25f;
     
-    uint32_t address = subtree->address;
-    SInt mask = *PTR_INDEX(octree->mask, address);
-    uint32_t child_start = *PTR_INDEX(octree->addr, address);
-    
     stack->level = 0;
     stack->rect = viewport;
     stack->is_behind = (bounds.min_z <= batcher->eye_z);
+    
+    uint32_t address = subtree->address;
+    SInt mask = 0;
+    uint32_t child_start = address;
+    if (stack->level != effects.max_level) {
+        mask = *PTR_INDEX(octree->mask, address);
+        child_start = *PTR_INDEX(octree->addr, address);
+    }
     
     Queue* queues = (octree->is_packed ? batcher->lookups->packed : batcher->lookups->sparse);
     
@@ -2462,13 +2479,16 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
         stack->rect = rect;
         stack->is_behind = intersects_eye_plane;
         
+        SInt is_max_level = (stack->level == effects.max_level);
         Queue queue = queues_reverse[mask];
         for (; queue.indices != 0; queue.indices >>= 4, queue.octants >>= 4) {
             address = child_start + (queue.indices & 7);
             stack->octants[stack->count] = (queue.octants & 7);
             stack->addresses[stack->count] = address;
-            stack->subnodes[stack->count] = *PTR_INDEX(octree->addr, address);
-            stack->masks[stack->count] = *PTR_INDEX(octree->mask, address);
+            if (!is_max_level) {
+                stack->subnodes[stack->count] = *PTR_INDEX(octree->addr, address);
+                stack->masks[stack->count] = *PTR_INDEX(octree->mask, address);
+            }
             stack->count++;
         }
     } while (stack > stack_start);
