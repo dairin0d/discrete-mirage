@@ -1067,8 +1067,7 @@ void calculate_maps(MapInfo* map, Queue* queues_forward,
     map->size36 = -1;
     map->size64 = -1;
     return;
-    #endif
-    
+    #else
     // Overflow can cause problems
     SInt max_dilation = (ORTHO_MAX_SIZE << SUBPIXEL_BITS) >> max_level;
     dilation = CLAMP(dilation, 0, max_dilation);
@@ -1180,6 +1179,7 @@ void calculate_maps(MapInfo* map, Queue* queues_forward,
         if ((item & 2) == 0) map->mask_bit1 |= octant_mask;
         if ((item & 4) == 0) map->mask_bit2 |= octant_mask;
     }
+    #endif
 }
 
 static inline SInt render_ortho_cull_draw(
