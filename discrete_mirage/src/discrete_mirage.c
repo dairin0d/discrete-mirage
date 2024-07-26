@@ -1179,7 +1179,7 @@ static inline SInt render_ortho_cull_draw(
     Vector3S* position, Vector3S* extent,
     Rect* rect, Rect* clip_rect,
     uint32_t affine_id, uint32_t address,
-    SInt level, SInt max_level,
+    SInt level, Effects* effects, Coord dilation,
     uint8_t* mask, uint32_t* child_start,
     Queue* queues_forward, Vector3S* deltas,
     MapInfo* map, uint32_t* indices)
@@ -1222,7 +1222,7 @@ static inline SInt render_ortho_cull_draw(
     }
     #endif
     
-    SInt is_splat = (size_max == 0) | (level == max_level);
+    SInt is_splat = (size_max == 0) | (level == effects->max_level);
     
     // Non-voxel data at max level might not actually be stored
     if (!is_splat) {
@@ -1233,6 +1233,18 @@ static inline SInt render_ortho_cull_draw(
     // Splat if this is a leaf node or reached max displayed level
     if (is_splat) {
         if (depth < min_depth) return TRUE;
+        
+        if (effects->shape == DMIR_SHAPE_POINT) {
+            MAX_UPDATE(dilation, 0);
+            rect->min_x = COORD_TO_PIXEL(position->x - dilation);
+            rect->max_x = COORD_TO_PIXEL(position->x + dilation);
+            rect->min_y = COORD_TO_PIXEL(position->y - dilation);
+            rect->max_y = COORD_TO_PIXEL(position->y + dilation);
+            MAX_UPDATE(rect->min_x, clip_rect->min_x);
+            MAX_UPDATE(rect->min_y, clip_rect->min_y);
+            MIN_UPDATE(rect->max_x, clip_rect->max_x);
+            MIN_UPDATE(rect->max_y, clip_rect->max_y);
+        }
         
         for (SInt y = rect->min_y; y <= rect->max_y; y++) {
             for (SInt x = rect->min_x; x <= rect->max_x; x++) {
@@ -1327,7 +1339,7 @@ static inline SInt render_ortho_cull_draw(
             mask64 |= (mask8 ? mask8 : 255) << ((queue.octants & 7) * 8);
         }
         
-        SInt use_suboctants = (size_max >= map->size36) & (level != (max_level-1));
+        SInt use_suboctants = (size_max >= map->size36) & (level != (effects->max_level-1));
         
         Coord mx, my;
         SInt x, y;
@@ -1470,7 +1482,7 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
             &position, &stack->extent,
             &rect, &stack->rect,
             affine_id, address,
-            stack->level, effects.max_level,
+            stack->level, &effects, dilation,
             &mask, &child_start,
             queues_forward, (stack+1)->deltas,
             &map, indices);
@@ -1566,7 +1578,7 @@ void render_ortho_alt(RendererInternal* renderer, BatcherInternal* batcher,
             &current.position, &current_extent,
             &rect, &current.rect,
             affine_id, current.address,
-            current.level, effects.max_level,
+            current.level, &effects, dilation,
             &mask, &child_start,
             queues_forward, (deltas + (current.level * CAGE_SIZE)),
             &map, indices);

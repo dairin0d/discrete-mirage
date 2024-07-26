@@ -227,6 +227,7 @@ typedef struct DMirEffects {
     int32_t max_level;
     float dilation_abs;
     float dilation_rel;
+    int32_t shape;
 } DMirEffects;
 
 // Each batched octree may be split into one or more
@@ -304,6 +305,8 @@ typedef struct DMirRenderer {
     DMirRect rect;
 } DMirRenderer;
 
+const int32_t DMIR_SHAPE_POINT = 0;
+const int32_t DMIR_SHAPE_RECT = 1;
 const struct DMirRect DMIR_RECT_EMPTY = {
     .min_x = INT32_MAX,
     .min_y = INT32_MAX,

@@ -73,6 +73,7 @@ struct ProgramState {
     DMirFrustum frustum;
     
     int max_level;
+    int splat_shape;
     
     std::vector<Object3D*> objects;
     std::vector<DMirOctree*> octrees;
@@ -469,6 +470,7 @@ void render_scene_subset(ProgramState* state, struct mat4 proj_matrix, int imin,
         if ((effects.max_level < 0) || (effects.max_level > state->max_level)) {
             effects.max_level = state->max_level;
         }
+        effects.shape = state->splat_shape;
         
         int group = index;
         dmir_batcher_add(state->dmir_batcher, state->dmir_framebuffer,
@@ -730,6 +732,7 @@ int main(int argc, char* argv[]) {
         .cam_zoom = -4,
         .cam_zoom_fov = 0,
         .max_level = -1,
+        .splat_shape = DMIR_SHAPE_RECT,
     };
     
     std::string window_title = "Discrete Mirage";
