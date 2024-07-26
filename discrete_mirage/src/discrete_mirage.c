@@ -563,6 +563,19 @@ static inline SInt is_occluded_quad(FramebufferInternal* framebuffer, Rect* rect
     return TRUE;
 }
 
+// Compensate for projected bounds' inaccuracy
+// Factor should be large enough to conservatively cover
+// the error, but small enough to not impact performance
+const float BOUNDS_EXPANSION_FACTOR = 1.0f / (1 << 24);
+static inline void enlarge_bounds(Bounds* bounds) {
+    float center_x = (bounds->min_x + bounds->max_x) * 0.5f;
+    float center_y = (bounds->min_y + bounds->max_y) * 0.5f;
+    bounds->min_x += (bounds->min_x - center_x) * BOUNDS_EXPANSION_FACTOR;
+    bounds->min_y += (bounds->min_y - center_y) * BOUNDS_EXPANSION_FACTOR;
+    bounds->max_x += (bounds->max_x - center_x) * BOUNDS_EXPANSION_FACTOR;
+    bounds->max_y += (bounds->max_y - center_y) * BOUNDS_EXPANSION_FACTOR;
+}
+
 #define RECT_CLIP(rect, other) {\
     MAX_UPDATE((rect).min_x, (other).min_x);\
     MAX_UPDATE((rect).min_y, (other).min_y);\
@@ -1884,9 +1897,7 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer_ptr,
     SInt viewport_size_x = viewport.max_x - viewport.min_x + 1;
     SInt viewport_size_y = viewport.max_y - viewport.min_y + 1;
     SInt viewport_size_max = MAX(viewport_size_x, viewport_size_y);
-    // Limit split_factor to a sane range, to avoid the
-    // "too inaccurate cage projection" glitches
-    SInt max_subtree_size = (SInt)(CLAMP(batcher->api.split_factor, 0, 100) * viewport_size_max);
+    SInt max_subtree_size = (SInt)CLAMP(batcher->api.split_factor * viewport_size_max, 0, INT32_MAX);
     MAX_UPDATE(max_subtree_size, (SInt)(effects.dilation_abs * 2 + 1));
     
     stack->level = 0;
@@ -1950,6 +1961,8 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer_ptr,
             float dilation_rel_size = effects.dilation_rel * bounds_size_max * (1 << stack->level);
             dilation += MIN(dilation_rel_size, DILATION_REL_SIZE_MAX);
         }
+        
+        if (stack->is_behind) enlarge_bounds(&bounds);
         
         // Calculate screen-space bounds (in pixels)
         // (clamps to a sane range if values are too big)
@@ -2382,6 +2395,8 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
             float dilation_rel_size = effects.dilation_rel * bounds_size_max * (1 << stack->level);
             dilation += MIN(dilation_rel_size, DILATION_REL_SIZE_MAX);
         }
+        
+        if (stack->is_behind) enlarge_bounds(&bounds);
         
         // Calculate screen-space bounds (in pixels)
         // (clamps to a sane range if values are too big)
