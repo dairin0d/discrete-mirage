@@ -1002,7 +1002,7 @@ SInt calculate_ortho_matrix(BatcherInternal* batcher, ProjectedVertex* grid, Vec
     return max_level;
 }
 
-void calculate_ortho_extent(Vector3S* matrix, Vector3S* extent) {
+void calculate_ortho_extent(Vector3S* matrix, Vector3S* extent, Effects* effects) {
     #ifdef DMIR_COORD_FIXED
     extent->x = (abs(matrix[0].x) + abs(matrix[1].x) + abs(matrix[2].x)) * 2;
     extent->y = (abs(matrix[0].y) + abs(matrix[1].y) + abs(matrix[2].y)) * 2;
@@ -1010,6 +1010,10 @@ void calculate_ortho_extent(Vector3S* matrix, Vector3S* extent) {
     extent->x = (fabsf(matrix[0].x) + fabsf(matrix[1].x) + fabsf(matrix[2].x)) * 2;
     extent->y = (fabsf(matrix[0].y) + fabsf(matrix[1].y) + fabsf(matrix[2].y)) * 2;
     #endif
+    
+    if (effects->shape == DMIR_SHAPE_SQUARE) {
+        extent->x = extent->y = MAX(extent->x, extent->y);
+    }
     
     #ifdef DMIR_DEPTH_INT32
     extent->z = (abs(matrix[0].z) + abs(matrix[1].z) + abs(matrix[2].z)) * 2;
@@ -1411,7 +1415,7 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
     effects.max_level = (effects.max_level < 0 ? max_level : MIN(effects.max_level, max_level));
     
     Vector3S extent;
-    calculate_ortho_extent(matrix, &extent);
+    calculate_ortho_extent(matrix, &extent, &effects);
     
     Coord dilation = calculate_ortho_dilation(&effects, &extent);
     
@@ -1526,7 +1530,7 @@ void render_ortho_alt(RendererInternal* renderer, BatcherInternal* batcher,
     effects.max_level = (effects.max_level < 0 ? max_level : MIN(effects.max_level, max_level));
     
     Vector3S extent;
-    calculate_ortho_extent(matrix, &extent);
+    calculate_ortho_extent(matrix, &extent, &effects);
     
     Coord dilation = calculate_ortho_dilation(&effects, &extent);
     
