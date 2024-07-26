@@ -454,10 +454,6 @@ void render_scene_subset(ProgramState* state, struct mat4 proj_matrix, int imin,
     if (imin < 0) imin = 0;
     if (imax >= state->objects.size()) imax = state->objects.size() - 1;
     
-    auto axis = svec3(0, 1, 0);
-    auto angle = SDL_GetTicks() * 0.0025f;
-    state->objects[0]->rotation = squat_from_axis_angle(axis, angle);
-    
     for (int index = imin; index <= imax; index++) {
         auto object3d = state->objects[index];
         if (object3d->hide) continue;
