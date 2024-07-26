@@ -145,6 +145,12 @@ const char DMIR_VERSION[] = "proto-1.0.0";
 
 // ===================================================== //
 
+// Enable this if you aren't sure that your octree(s)
+// contain valid node addresses everywhere
+#define DMIR_VALIDATE_ADDRESSES
+
+// ===================================================== //
+
 typedef uint8_t DMirBool;
 
 #ifdef DMIR_DEPTH_INT32
@@ -196,9 +202,8 @@ typedef struct DMirFrustum {
 // *_stride: offset (in bytes) between each item (this way,
 // addr/mask/data can be stored as separate arrays or as
 // one interleaved array).
-// count: number of nodes (currently not used in traversal,
-// so ensuring that addresses / masks contain no errors
-// is left in the responsibility of the user).
+// count: number of nodes (used to check if node addresses
+// stay within array bounds; see DMIR_VALIDATE_ADDRESSES).
 // max_level: if >= 0, limits the depth of octree traversal.
 // is_packed: whether the octree nodes are packed (empty
 // children are not stored) or sparse (always 8 children).

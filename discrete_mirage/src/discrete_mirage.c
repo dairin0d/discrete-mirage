@@ -225,6 +225,14 @@ typedef uint32_t Stencil;
 #endif
 #define MAP_SIZE (1 << MAP_BITS)
 
+#ifdef DMIR_VALIDATE_ADDRESSES
+#define VALIDATE_ADDRESS(address, octree, stop) {\
+    if ((address) >= (octree)->count) stop;\
+}
+#else
+#define VALIDATE_ADDRESS(address, octree, stop)
+#endif
+
 typedef DMirBool Bool;
 typedef DMirDepth Depth;
 typedef DMirColor Color;
@@ -1246,6 +1254,7 @@ static inline SInt render_ortho_cull_draw(
             Depth z = position->z + deltas[octant].z;
             
             address = *child_start + (queue.indices & 7);
+            VALIDATE_ADDRESS(address, octree, continue);
             
             CHECK_AND_WRITE_STENCIL(framebuffer, x, y, continue);
             SPLAT(framebuffer, fragments, x, y, z,
@@ -1280,6 +1289,7 @@ static inline SInt render_ortho_cull_draw(
                 uint32_t index = (o2i >> (octant*4)) & 7;
                 Depth z = position->z + deltas[octant].z;
                 address = *child_start + index;
+                VALIDATE_ADDRESS(address, octree, continue);
                 
                 SPLAT(framebuffer, fragments, x, y, z,
                     affine_id, address, octree, continue);
@@ -1329,6 +1339,7 @@ static inline SInt render_ortho_cull_draw(
                 
                 uint32_t index = (o2i >> (octant64*4)) & 7;
                 address = *child_start + index;
+                VALIDATE_ADDRESS(address, octree, continue);
                 
                 if (use_suboctants) {
                     uint8_t sub_mask_full = *PTR_INDEX(octree->mask, address);
@@ -1338,6 +1349,7 @@ static inline SInt render_ortho_cull_draw(
                         z += deltas[octant].z >> 1;
                         index = (indices[sub_mask_full | indices_mask] >> (octant*4)) & 7;
                         address = *PTR_INDEX(octree->addr, address) + index;
+                        VALIDATE_ADDRESS(address, octree, continue);
                     }
                 }
                 
@@ -1460,6 +1472,7 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
         Queue queue = queues_reverse[mask];
         for (; queue.indices != 0; queue.indices >>= 4, queue.octants >>= 4) {
             address = child_start + (queue.indices & 7);
+            VALIDATE_ADDRESS(address, octree, continue);
             stack->octants[stack->count] = (queue.octants & 7);
             stack->addresses[stack->count] = address;
             stack->count++;
@@ -1550,13 +1563,15 @@ void render_ortho_alt(RendererInternal* renderer, BatcherInternal* batcher,
         Queue queue = queues_reverse[mask];
         for (; queue.indices != 0; queue.indices >>= 4, queue.octants >>= 4) {
             SInt octant = (queue.octants & 7);
+            uint32_t address = child_start + (queue.indices & 7);
+            VALIDATE_ADDRESS(address, octree, continue);
             
             stack++;
             stack->rect = rect;
             stack->position.x = current.position.x + (deltas[octant].x >> current.level);
             stack->position.y = current.position.y + (deltas[octant].y >> current.level);
             stack->position.z = current.position.z + (deltas[octant].z >> current.level);
-            stack->address = child_start + (queue.indices & 7);
+            stack->address = address;
             stack->level = current.level + 1;
         }
     }
@@ -1880,6 +1895,8 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer_ptr,
     stack->is_behind = (bounds.min_z <= batcher->eye_z);
     
     uint32_t address = root;
+    VALIDATE_ADDRESS(address, octree, return);
+    
     SInt mask = 0;
     uint32_t child_start = address;
     if (stack->level != effects.max_level) {
@@ -2028,6 +2045,7 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer_ptr,
         Queue queue = queues_reverse[mask];
         for (; queue.indices != 0; queue.indices >>= 4, queue.octants >>= 4) {
             address = child_start + (queue.indices & 7);
+            VALIDATE_ADDRESS(address, octree, continue);
             stack->octants[stack->count] = (queue.octants & 7);
             stack->addresses[stack->count] = address;
             if (!is_max_level) {
@@ -2305,6 +2323,8 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
     stack->is_behind = (bounds.min_z <= batcher->eye_z);
     
     uint32_t address = subtree->address;
+    VALIDATE_ADDRESS(address, octree, return);
+    
     SInt mask = 0;
     uint32_t child_start = address;
     if (stack->level != effects.max_level) {
@@ -2483,6 +2503,7 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
         Queue queue = queues_reverse[mask];
         for (; queue.indices != 0; queue.indices >>= 4, queue.octants >>= 4) {
             address = child_start + (queue.indices & 7);
+            VALIDATE_ADDRESS(address, octree, continue);
             stack->octants[stack->count] = (queue.octants & 7);
             stack->addresses[stack->count] = address;
             if (!is_max_level) {
