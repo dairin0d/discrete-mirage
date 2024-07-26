@@ -1382,7 +1382,7 @@ static inline SInt render_ortho_cull_draw(
                     if (sub_mask_full != 0) {
                         uint8_t sub_mask = sub_mask_full & (mask_xy >> (octant64 * 8));
                         uint32_t octant = queues_forward[sub_mask].octants & 7;
-                        z += deltas[octant].z >> 1;
+                        z += DEPTH_HALVE(deltas[octant].z);
                         index = (indices[sub_mask_full | indices_mask] >> (octant*4)) & 7;
                         address = *PTR_INDEX(octree->addr, address) + index;
                         VALIDATE_ADDRESS(address, octree, continue);
