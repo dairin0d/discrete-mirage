@@ -808,12 +808,14 @@ int main(int argc, char* argv[]) {
     int next_frame_update = 0;
     
     auto last_title_update = SDL_GetTicks();
-    int title_update_period = 1000;
+    int frame_time_update_period = 500;
     
     int accum_time = 0;
     int accum_count = 0;
     
     state.frame_count = 0;
+    
+    std::string frame_time_ms = "? ms";
     
     while (state.is_running) {
         SDL_PumpEvents();
@@ -834,18 +836,20 @@ int main(int argc, char* argv[]) {
         
         auto time = SDL_GetTicks();
         
-        if ((time - last_title_update > title_update_period) & (accum_count > 0)) {
+        if ((time - last_title_update > frame_time_update_period) & (accum_count > 0)) {
             last_title_update = time;
             
             int frame_time = (int)((accum_time / (float)accum_count) + 0.5f);
             accum_time = 0;
             accum_count = 0;
             
-            std::string title = window_title + ": " +
-                std::to_string(frame_time) + " ms, " +
-                std::to_string(state.thread_count) + " thread(s)";
-            SDL_SetWindowTitle(state.window, title.c_str());
+            frame_time_ms = std::to_string(frame_time) + " ms";
         }
+        
+        std::string title = window_title + ": " +
+            frame_time_ms + ", " +
+            std::to_string(state.thread_count) + " thread(s)";
+        SDL_SetWindowTitle(state.window, title.c_str());
         
         auto frame_remainder = next_frame_update - (int)time;
         if (frame_remainder > 0) {
