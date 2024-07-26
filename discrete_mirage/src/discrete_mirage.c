@@ -45,7 +45,7 @@
 // We have to limit the maximum screen-space size
 // of relative dilation, because in perspective
 // it can become too big near the eye plane
-#define DILATION_REL_SIZE_MAX 64
+#define DILATION_REL_SIZE_MAX 256
 
 #if DMIR_INT_SIZE == 32
 typedef int32_t SInt;
@@ -1018,6 +1018,12 @@ void calculate_ortho_extent(Vector3S* matrix, Vector3S* extent) {
     #endif
 }
 
+Coord calculate_ortho_dilation(Effects* effects, Vector3S* extent) {
+    Coord dilation_abs = (Coord)(effects->dilation_abs * SUBPIXEL_SIZE);
+    Coord dilation_rel = (Coord)(effects->dilation_rel * 2 * MAX(extent->x, extent->y));
+    return dilation_abs + MIN(dilation_rel, DILATION_REL_SIZE_MAX * SUBPIXEL_SIZE);
+}
+
 void calculate_ortho_deltas(Vector3S* deltas, Vector3S* matrix, int32_t factor) {
     SInt octant = 0;
     for (SInt z = -1; z <= 1; z += 2) {
@@ -1057,9 +1063,11 @@ void calculate_maps(MapInfo* map, Queue* queues_forward,
     map->size36 = -1;
     map->size64 = -1;
     return;
-    #else
+    #endif
+    
     // Overflow can cause problems
-    dilation = CLAMP(dilation, 0, (ORTHO_MAX_SIZE << SUBPIXEL_BITS));
+    SInt max_dilation = (ORTHO_MAX_SIZE << SUBPIXEL_BITS) >> max_level;
+    dilation = CLAMP(dilation, 0, max_dilation);
     
     // Expand the "use map" size by the dilation at pixel level
     SInt pixel_dilation_size = COORD_TO_PIXEL(dilation * 2);
@@ -1168,7 +1176,6 @@ void calculate_maps(MapInfo* map, Queue* queues_forward,
         if ((item & 2) == 0) map->mask_bit1 |= octant_mask;
         if ((item & 4) == 0) map->mask_bit2 |= octant_mask;
     }
-    #endif
 }
 
 static inline SInt render_ortho_cull_draw(
@@ -1406,8 +1413,7 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
     Vector3S extent;
     calculate_ortho_extent(matrix, &extent);
     
-    Coord dilation = (Coord)(effects.dilation_abs * SUBPIXEL_SIZE);
-    dilation += (Coord)(effects.dilation_rel * 2 * MAX(extent.x, extent.y));
+    Coord dilation = calculate_ortho_dilation(&effects, &extent);
     
     OrthoStackItem* stack = stack_start;
     
@@ -1522,8 +1528,7 @@ void render_ortho_alt(RendererInternal* renderer, BatcherInternal* batcher,
     Vector3S extent;
     calculate_ortho_extent(matrix, &extent);
     
-    Coord dilation = (Coord)(effects.dilation_abs * SUBPIXEL_SIZE);
-    dilation += (Coord)(effects.dilation_rel * 2 * MAX(extent.x, extent.y));
+    Coord dilation = calculate_ortho_dilation(&effects, &extent);
     
     Vector3S deltas[CAGE_SIZE * ORTHO_MAX_SUBDIVISIONS];
     calculate_ortho_deltas(deltas, matrix, 1);
