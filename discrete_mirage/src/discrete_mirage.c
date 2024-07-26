@@ -1003,16 +1003,41 @@ SInt calculate_ortho_matrix(BatcherInternal* batcher, ProjectedVertex* grid, Vec
 }
 
 void calculate_ortho_extent(Vector3S* matrix, Vector3S* extent, Effects* effects) {
-    #ifdef DMIR_COORD_FIXED
-    extent->x = (abs(matrix[0].x) + abs(matrix[1].x) + abs(matrix[2].x)) * 2;
-    extent->y = (abs(matrix[0].y) + abs(matrix[1].y) + abs(matrix[2].y)) * 2;
-    #else
-    extent->x = (fabsf(matrix[0].x) + fabsf(matrix[1].x) + fabsf(matrix[2].x)) * 2;
-    extent->y = (fabsf(matrix[0].y) + fabsf(matrix[1].y) + fabsf(matrix[2].y)) * 2;
-    #endif
+    // Note: while we technically can estimate the square / circle bounds
+    // in the cage-subdivision traversal, they would be wildly inaccurate
+    // (and enormous) for nodes with large perspective distortion, which
+    // can significantly reduce the performance.
+    // Calculating the square / circle bounds in ortho may optimistically
+    // cull some nodes for which the leaf bounds would actually be visible,
+    // but that is a much more acceptable tradeoff.
     
-    if (effects->shape == DMIR_SHAPE_SQUARE) {
-        extent->x = extent->y = MAX(extent->x, extent->y);
+    if (effects->shape == DMIR_SHAPE_CIRCLE) {
+        // Diagonals are symmetric, so we only need to consider 4 corners
+        float radius_squared_max = 0;
+        for (SInt sy = -1; sy <= 1; sy += 2) {
+            for (SInt sx = -1; sx <= 1; sx += 2) {
+                float dx = matrix[0].x * sx + matrix[1].x * sy + matrix[2].x;
+                float dy = matrix[0].y * sx + matrix[1].y * sy + matrix[2].y;
+                float radius_squared = dx * dx + dy * dy;
+                MAX_UPDATE(radius_squared_max, radius_squared);
+            }
+        }
+        
+        float radius = sqrtf(radius_squared_max) * 2;
+        extent->x = (Coord)radius;
+        extent->y = (Coord)radius;
+    } else {
+        #ifdef DMIR_COORD_FIXED
+        extent->x = (abs(matrix[0].x) + abs(matrix[1].x) + abs(matrix[2].x)) * 2;
+        extent->y = (abs(matrix[0].y) + abs(matrix[1].y) + abs(matrix[2].y)) * 2;
+        #else
+        extent->x = (fabsf(matrix[0].x) + fabsf(matrix[1].x) + fabsf(matrix[2].x)) * 2;
+        extent->y = (fabsf(matrix[0].y) + fabsf(matrix[1].y) + fabsf(matrix[2].y)) * 2;
+        #endif
+        
+        if (effects->shape == DMIR_SHAPE_SQUARE) {
+            extent->x = extent->y = MAX(extent->x, extent->y);
+        }
     }
     
     #ifdef DMIR_DEPTH_INT32
@@ -1025,6 +1050,7 @@ void calculate_ortho_extent(Vector3S* matrix, Vector3S* extent, Effects* effects
 Coord calculate_ortho_dilation(Effects* effects, Vector3S* extent) {
     Coord dilation_abs = (Coord)(effects->dilation_abs * SUBPIXEL_SIZE);
     Coord dilation_rel = (Coord)(effects->dilation_rel * 2 * MAX(extent->x, extent->y));
+    if (effects->shape == DMIR_SHAPE_CIRCLE) MAX_UPDATE(dilation_abs, 0);
     return dilation_abs + MIN(dilation_rel, DILATION_REL_SIZE_MAX * SUBPIXEL_SIZE);
 }
 
@@ -1182,6 +1208,67 @@ void calculate_maps(MapInfo* map, Queue* queues_forward,
     #endif
 }
 
+static inline void draw_circle(
+    FramebufferInternal* framebuffer,
+    Fragment** fragments,
+    Octree* octree,
+    uint32_t affine_id, uint32_t address,
+    Vector3S* position, Vector3S* extent,
+    Rect* rect)
+{
+    Coord radius = extent->x; // circle extent is the same for x and y
+    
+    #ifdef DMIR_COORD_FIXED
+    const int MAGNITUDE_LIMIT = 23170; // (2 * 23170)^2 < 2^31
+    SInt circle_shift = SUBPIXEL_BITS;
+    while ((radius > MAGNITUDE_LIMIT) | ((1 << circle_shift) > MAGNITUDE_LIMIT)) {
+        circle_shift--;
+        radius >>= 1;
+    }
+    #endif
+    
+    Coord radius2 = radius * radius;
+    
+    #ifdef DMIR_COORD_FIXED
+    Coord start_dx = (PIXEL_TO_COORD(rect->min_x) - position->x) >> (SUBPIXEL_BITS - circle_shift);
+    Coord start_dy = (PIXEL_TO_COORD(rect->min_y) - position->y) >> (SUBPIXEL_BITS - circle_shift);
+    Coord step_add = 1 << circle_shift;
+    SInt step_shift = circle_shift + 1;
+    Coord step_add_2 = step_add * step_add;
+    Coord distance_2_y = start_dx * start_dx + start_dy * start_dy;
+    start_dx <<= step_shift;
+    start_dy <<= step_shift;
+    step_add <<= step_shift;
+    #else
+    Coord start_dx = PIXEL_TO_COORD(rect->min_x) - position->x;
+    Coord start_dy = PIXEL_TO_COORD(rect->min_y) - position->y;
+    Coord step_add = 2;
+    Coord step_add_2 = 1;
+    Coord distance_2_y = start_dx * start_dx + start_dy * start_dy;
+    start_dx *= 2;
+    start_dy *= 2;
+    #endif
+    
+    for (SInt y = rect->min_y; y <= rect->max_y; y++) {
+        Coord distance_2 = distance_2_y, row_dx = start_dx;
+        
+        for (SInt x = rect->min_x; x <= rect->max_x; x++) {
+            SInt is_inside = (distance_2 <= radius2);
+            distance_2 += row_dx + step_add_2;
+            row_dx += step_add;
+            
+            if (!is_inside) continue;
+            
+            CHECK_AND_WRITE_STENCIL(framebuffer, x, y, continue);
+            SPLAT(framebuffer, fragments, x, y, position->z,
+                affine_id, address, octree, continue);
+        }
+        
+        distance_2_y += start_dy + step_add_2;
+        start_dy += step_add;
+    }
+}
+
 static inline SInt render_ortho_cull_draw(
     FramebufferInternal* framebuffer,
     Fragment** fragments,
@@ -1245,23 +1332,27 @@ static inline SInt render_ortho_cull_draw(
     if (is_splat) {
         if (depth < min_depth) return TRUE;
         
-        if (effects->shape == DMIR_SHAPE_POINT) {
-            MAX_UPDATE(dilation, 0);
-            rect->min_x = COORD_TO_PIXEL(position->x - dilation);
-            rect->max_x = COORD_TO_PIXEL(position->x + dilation);
-            rect->min_y = COORD_TO_PIXEL(position->y - dilation);
-            rect->max_y = COORD_TO_PIXEL(position->y + dilation);
-            MAX_UPDATE(rect->min_x, clip_rect->min_x);
-            MAX_UPDATE(rect->min_y, clip_rect->min_y);
-            MIN_UPDATE(rect->max_x, clip_rect->max_x);
-            MIN_UPDATE(rect->max_y, clip_rect->max_y);
-        }
-        
-        for (SInt y = rect->min_y; y <= rect->max_y; y++) {
-            for (SInt x = rect->min_x; x <= rect->max_x; x++) {
-                CHECK_AND_WRITE_STENCIL(framebuffer, x, y, continue);
-                SPLAT(framebuffer, fragments, x, y, position->z,
-                    affine_id, address, octree, continue);
+        if (effects->shape == DMIR_SHAPE_CIRCLE) {
+            draw_circle(framebuffer, fragments, octree, affine_id, address, position, extent, rect);
+        } else {
+            if (effects->shape == DMIR_SHAPE_POINT) {
+                MAX_UPDATE(dilation, 0);
+                rect->min_x = COORD_TO_PIXEL(position->x - dilation);
+                rect->max_x = COORD_TO_PIXEL(position->x + dilation);
+                rect->min_y = COORD_TO_PIXEL(position->y - dilation);
+                rect->max_y = COORD_TO_PIXEL(position->y + dilation);
+                MAX_UPDATE(rect->min_x, clip_rect->min_x);
+                MAX_UPDATE(rect->min_y, clip_rect->min_y);
+                MIN_UPDATE(rect->max_x, clip_rect->max_x);
+                MIN_UPDATE(rect->max_y, clip_rect->max_y);
+            }
+            
+            for (SInt y = rect->min_y; y <= rect->max_y; y++) {
+                for (SInt x = rect->min_x; x <= rect->max_x; x++) {
+                    CHECK_AND_WRITE_STENCIL(framebuffer, x, y, continue);
+                    SPLAT(framebuffer, fragments, x, y, position->z,
+                        affine_id, address, octree, continue);
+                }
             }
         }
         

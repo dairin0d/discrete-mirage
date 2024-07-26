@@ -308,6 +308,7 @@ typedef struct DMirRenderer {
 const int32_t DMIR_SHAPE_POINT = 0;
 const int32_t DMIR_SHAPE_RECT = 1;
 const int32_t DMIR_SHAPE_SQUARE = 2;
+const int32_t DMIR_SHAPE_CIRCLE = 3;
 
 const struct DMirRect DMIR_RECT_EMPTY = {
     .min_x = INT32_MAX,
