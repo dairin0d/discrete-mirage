@@ -1534,7 +1534,7 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
     effects.max_level = (effects.max_level < 0 ? max_level : MIN(effects.max_level, max_level));
     
     // In the cube case, we need to calculate extents/deltas to the pixel level
-    if (effects.shape != DMIR_SHAPE_CUBE) max_level = effects.max_level;
+    SInt max_stack_level = (effects.shape != DMIR_SHAPE_CUBE) ? effects.max_level : max_level;
     
     Vector3S extent;
     calculate_ortho_extent(matrix, &extent, &effects);
@@ -1547,7 +1547,7 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
     
     stack->extent = extent;
     
-    for (SInt level = 1; level <= max_level; level++) {
+    for (SInt level = 1; level <= max_stack_level; level++) {
         stack[level].extent.x = COORD_HALVE(stack[level-1].extent.x);
         stack[level].extent.y = COORD_HALVE(stack[level-1].extent.y);
         stack[level].extent.z = DEPTH_HALVE(stack[level-1].extent.z);
@@ -1558,7 +1558,7 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
         }
     }
     
-    for (SInt level = 0; level <= max_level; level++) {
+    for (SInt level = 0; level <= max_stack_level; level++) {
         stack[level].level = level;
         stack[level].extent.x += dilation;
         stack[level].extent.y += dilation;
@@ -1580,7 +1580,9 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
     uint32_t* indices = batcher->lookups->indices;
     
     MapInfo map;
-    calculate_maps(&map, queues_forward, stack[1].deltas, extent, dilation, max_level);
+    if (max_stack_level > 0) {
+        calculate_maps(&map, queues_forward, stack[1].deltas, extent, dilation, max_level);
+    }
     
     Depth min_depth = z_to_depth(batcher, batcher->frustum_bounds.min_z);
     Depth max_depth = z_to_depth(batcher, batcher->frustum_bounds.max_z);
@@ -1658,7 +1660,7 @@ void render_ortho_alt(RendererInternal* renderer, BatcherInternal* batcher,
     effects.max_level = (effects.max_level < 0 ? max_level : MIN(effects.max_level, max_level));
     
     // In the cube case, we need to calculate extents/deltas to the pixel level
-    if (effects.shape != DMIR_SHAPE_CUBE) max_level = effects.max_level;
+    SInt max_stack_level = (effects.shape != DMIR_SHAPE_CUBE) ? effects.max_level : max_level;
     
     Vector3S extent;
     calculate_ortho_extent(matrix, &extent, &effects);
@@ -1668,7 +1670,7 @@ void render_ortho_alt(RendererInternal* renderer, BatcherInternal* batcher,
     Vector3S deltas[CAGE_SIZE * ORTHO_MAX_SUBDIVISIONS];
     calculate_ortho_deltas(deltas, matrix, 1);
     
-    for (SInt level = 1; level <= max_level; level++) {
+    for (SInt level = 1; level <= max_stack_level; level++) {
         Vector3S* deltasP = deltas + ((level-1) * CAGE_SIZE);
         Vector3S* deltasN = deltas + (level * CAGE_SIZE);
         for (SInt octant = 0; octant < 8; octant++) {
@@ -1693,7 +1695,9 @@ void render_ortho_alt(RendererInternal* renderer, BatcherInternal* batcher,
     uint32_t* indices = batcher->lookups->indices;
     
     MapInfo map;
-    calculate_maps(&map, queues_forward, deltas, extent, dilation, max_level);
+    if (max_stack_level > 0) {
+        calculate_maps(&map, queues_forward, deltas, extent, dilation, max_level);
+    }
     
     Depth min_depth = z_to_depth(batcher, batcher->frustum_bounds.min_z);
     Depth max_depth = z_to_depth(batcher, batcher->frustum_bounds.max_z);
