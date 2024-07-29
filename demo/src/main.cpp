@@ -14,6 +14,11 @@
 // * { and } - increase/decrease number of threads
 // * - and + - change the max octree descent level
 // * Tab - depth visualization mode
+// * F1 - render leaf nodes as points
+// * F2 - render leaf nodes as rectangles
+// * F3 - render leaf nodes as squares
+// * F4 - render leaf nodes as circles
+// * F5 - render leaf nodes as cubes
 // * F12 - toggle "antialiasing/motion-blur" mode
 // * Esc - quit
 
@@ -327,6 +332,21 @@ int process_event(void* data, SDL_Event* event) {
             break;
         case SDLK_TAB:
             state->is_depth_mode = !state->is_depth_mode;
+            break;
+        case SDLK_F1:
+            state->splat_shape = DMIR_SHAPE_POINT;
+            break;
+        case SDLK_F2:
+            state->splat_shape = DMIR_SHAPE_RECT;
+            break;
+        case SDLK_F3:
+            state->splat_shape = DMIR_SHAPE_SQUARE;
+            break;
+        case SDLK_F4:
+            state->splat_shape = DMIR_SHAPE_CIRCLE;
+            break;
+        case SDLK_F5:
+            state->splat_shape = DMIR_SHAPE_CUBE;
             break;
         case SDLK_F12:
             state->use_accumulation = !state->use_accumulation;
