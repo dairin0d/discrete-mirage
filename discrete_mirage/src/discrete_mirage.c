@@ -296,6 +296,7 @@ typedef struct GridStackItem {
     SInt level;
     SInt affine_id;
     SInt is_behind;
+    SInt is_cube;
 } GridStackItem;
 
 typedef struct OrthoStackItem {
@@ -309,13 +310,15 @@ typedef struct OrthoStackItem {
     uint32_t addresses[8];
     SInt count;
     SInt level;
+    SInt is_cube;
 } OrthoStackItem;
 
 typedef struct OrthoStackItemAlt {
     Rect rect;
     Vector3S position;
     uint32_t address;
-    int32_t level;
+    SInt level;
+    SInt is_cube;
 } OrthoStackItemAlt;
 
 typedef struct Fragment {
@@ -1278,7 +1281,7 @@ static inline SInt render_ortho_cull_draw(
     Rect* rect, Rect* clip_rect,
     uint32_t affine_id, uint32_t address,
     SInt level, Effects* effects, Coord dilation,
-    uint8_t* mask, uint32_t* child_start,
+    uint8_t* mask, uint32_t* child_start, SInt* is_cube,
     Queue* queues_forward, Vector3S* deltas,
     MapInfo* map, uint32_t* indices)
 {
@@ -1320,12 +1323,24 @@ static inline SInt render_ortho_cull_draw(
     }
     #endif
     
-    SInt is_splat = (size_max == 0) | (level == effects->max_level);
+    SInt is_splat = (size_max == 0);
     
-    // Non-voxel data at max level might not actually be stored
-    if (!is_splat) {
-        *mask = *PTR_INDEX(octree->mask, address);
-        is_splat = !*mask;
+    if (*is_cube) {
+        *mask = 255;
+    } else {
+        is_splat |= (level == effects->max_level);
+        
+        // Non-voxel data at max level might not actually be stored
+        if (!is_splat) {
+            *mask = *PTR_INDEX(octree->mask, address);
+            is_splat = !*mask;
+        }
+        
+        if (is_splat & (effects->shape == DMIR_SHAPE_CUBE)) {
+            *mask = 255;
+            *is_cube = TRUE;
+            is_splat = FALSE;
+        }
     }
     
     // Splat if this is a leaf node or reached max displayed level
@@ -1362,7 +1377,9 @@ static inline SInt render_ortho_cull_draw(
     // Do an occlusion check
     if (is_occluded_quad(framebuffer, rect, depth)) return TRUE;
     
-    *child_start = *PTR_INDEX(octree->addr, address);
+    if (!*is_cube) {
+        *child_start = *PTR_INDEX(octree->addr, address);
+    }
     
     #ifdef DMIR_USE_BLIT_AT_2X2
     if (size_max <= 1) {
@@ -1380,8 +1397,10 @@ static inline SInt render_ortho_cull_draw(
             
             Depth z = position->z + deltas[octant].z;
             
-            address = *child_start + (queue.indices & 7);
-            VALIDATE_ADDRESS(address, octree, continue);
+            if (!*is_cube) {
+                address = *child_start + (queue.indices & 7);
+                VALIDATE_ADDRESS(address, octree, continue);
+            }
             
             CHECK_AND_WRITE_STENCIL(framebuffer, x, y, continue);
             SPLAT(framebuffer, fragments, x, y, z,
@@ -1413,10 +1432,13 @@ static inline SInt render_ortho_cull_draw(
                 CHECK_AND_WRITE_STENCIL(framebuffer, x, y, continue);
                 
                 uint32_t octant = queues_forward[mask_xy].octants & 7;
-                uint32_t index = (o2i >> (octant*4)) & 7;
                 Depth z = position->z + deltas[octant].z;
-                address = *child_start + index;
-                VALIDATE_ADDRESS(address, octree, continue);
+                
+                if (!*is_cube) {
+                    uint32_t index = (o2i >> (octant*4)) & 7;
+                    address = *child_start + index;
+                    VALIDATE_ADDRESS(address, octree, continue);
+                }
                 
                 SPLAT(framebuffer, fragments, x, y, z,
                     affine_id, address, octree, continue);
@@ -1435,10 +1457,14 @@ static inline SInt render_ortho_cull_draw(
         uint32_t o2i = indices[(*mask) | indices_mask];
         
         uint64_t mask64 = 0;
-        Queue queue = queues_forward[*mask];
-        for (; queue.indices != 0; queue.indices >>= 4, queue.octants >>= 4) {
-            uint64_t mask8 = *PTR_INDEX(octree->mask, (*child_start + (queue.indices & 7)));
-            mask64 |= (mask8 ? mask8 : 255) << ((queue.octants & 7) * 8);
+        if (!*is_cube) {
+            Queue queue = queues_forward[*mask];
+            for (; queue.indices != 0; queue.indices >>= 4, queue.octants >>= 4) {
+                uint64_t mask8 = *PTR_INDEX(octree->mask, (*child_start + (queue.indices & 7)));
+                mask64 |= (mask8 ? mask8 : 255) << ((queue.octants & 7) * 8);
+            }
+        } else {
+            mask64 = UINT64_MAX;
         }
         
         SInt use_suboctants = (size_max >= map->size36) & (level != (effects->max_level-1));
@@ -1464,19 +1490,21 @@ static inline SInt render_ortho_cull_draw(
                 
                 Depth z = position->z + deltas[octant64].z;
                 
-                uint32_t index = (o2i >> (octant64*4)) & 7;
-                address = *child_start + index;
-                VALIDATE_ADDRESS(address, octree, continue);
-                
-                if (use_suboctants) {
-                    uint8_t sub_mask_full = *PTR_INDEX(octree->mask, address);
-                    if (sub_mask_full != 0) {
-                        uint8_t sub_mask = sub_mask_full & (mask_xy >> (octant64 * 8));
-                        uint32_t octant = queues_forward[sub_mask].octants & 7;
-                        z += DEPTH_HALVE(deltas[octant].z);
-                        index = (indices[sub_mask_full | indices_mask] >> (octant*4)) & 7;
-                        address = *PTR_INDEX(octree->addr, address) + index;
-                        VALIDATE_ADDRESS(address, octree, continue);
+                if (!*is_cube) {
+                    uint32_t index = (o2i >> (octant64*4)) & 7;
+                    address = *child_start + index;
+                    VALIDATE_ADDRESS(address, octree, continue);
+                    
+                    if (use_suboctants) {
+                        uint8_t sub_mask_full = *PTR_INDEX(octree->mask, address);
+                        if (sub_mask_full != 0) {
+                            uint8_t sub_mask = sub_mask_full & (mask_xy >> (octant64 * 8));
+                            uint32_t octant = queues_forward[sub_mask].octants & 7;
+                            z += DEPTH_HALVE(deltas[octant].z);
+                            index = (indices[sub_mask_full | indices_mask] >> (octant*4)) & 7;
+                            address = *PTR_INDEX(octree->addr, address) + index;
+                            VALIDATE_ADDRESS(address, octree, continue);
+                        }
                     }
                 }
                 
@@ -1495,7 +1523,7 @@ static inline SInt render_ortho_cull_draw(
 // Uses "parent-on-stack" octree traversal
 void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
     FramebufferInternal* framebuffer, Fragment** fragments,
-    uint32_t affine_id, Octree* octree, uint32_t address, Effects effects,
+    uint32_t affine_id, Octree* octree, uint32_t address, Effects effects, SInt is_cube,
     ProjectedVertex* grid, OrthoStackItem* stack_start)
 {
     Vector3S matrix[4];
@@ -1504,6 +1532,9 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
     if (max_level < 0) return;
     
     effects.max_level = (effects.max_level < 0 ? max_level : MIN(effects.max_level, max_level));
+    
+    // In the cube case, we need to calculate extents/deltas to the pixel level
+    if (effects.shape != DMIR_SHAPE_CUBE) max_level = effects.max_level;
     
     Vector3S extent;
     calculate_ortho_extent(matrix, &extent, &effects);
@@ -1516,7 +1547,7 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
     
     stack->extent = extent;
     
-    for (SInt level = 1; level <= effects.max_level; level++) {
+    for (SInt level = 1; level <= max_level; level++) {
         stack[level].extent.x = COORD_HALVE(stack[level-1].extent.x);
         stack[level].extent.y = COORD_HALVE(stack[level-1].extent.y);
         stack[level].extent.z = DEPTH_HALVE(stack[level-1].extent.z);
@@ -1527,13 +1558,15 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
         }
     }
     
-    for (SInt level = 0; level <= effects.max_level; level++) {
+    for (SInt level = 0; level <= max_level; level++) {
         stack[level].level = level;
         stack[level].extent.x += dilation;
         stack[level].extent.y += dilation;
     }
     
     stack->rect = renderer->api.rect;
+    
+    stack->is_cube = is_cube;
     
     Vector3S position;
     position.x = matrix[3].x;
@@ -1575,6 +1608,7 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
         Rect rect;
         uint8_t mask;
         uint32_t child_start;
+        is_cube = stack->is_cube;
         SInt done = render_ortho_cull_draw(
             framebuffer,
             fragments,
@@ -1584,7 +1618,7 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
             &rect, &stack->rect,
             affine_id, address,
             stack->level, &effects, dilation,
-            &mask, &child_start,
+            &mask, &child_start, &is_cube,
             queues_forward, (stack+1)->deltas,
             &map, indices);
         if (done) continue;
@@ -1594,11 +1628,14 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
         stack->count = 0;
         stack->rect = rect;
         stack->center = position;
+        stack->is_cube = is_cube;
         
         Queue queue = queues_reverse[mask];
         for (; queue.indices != 0; queue.indices >>= 4, queue.octants >>= 4) {
-            address = child_start + (queue.indices & 7);
-            VALIDATE_ADDRESS(address, octree, continue);
+            if (!is_cube) {
+                address = child_start + (queue.indices & 7);
+                VALIDATE_ADDRESS(address, octree, continue);
+            }
             stack->octants[stack->count] = (queue.octants & 7);
             stack->addresses[stack->count] = address;
             stack->count++;
@@ -1610,7 +1647,7 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
 // Uses "children-on-stack" octree traversal
 void render_ortho_alt(RendererInternal* renderer, BatcherInternal* batcher,
     FramebufferInternal* framebuffer, Fragment** fragments,
-    uint32_t affine_id, Octree* octree, uint32_t subroot, Effects effects,
+    uint32_t affine_id, Octree* octree, uint32_t subroot, Effects effects, SInt is_cube,
     ProjectedVertex* grid, OrthoStackItemAlt* stack_start)
 {
     Vector3S matrix[4];
@@ -1620,6 +1657,9 @@ void render_ortho_alt(RendererInternal* renderer, BatcherInternal* batcher,
     
     effects.max_level = (effects.max_level < 0 ? max_level : MIN(effects.max_level, max_level));
     
+    // In the cube case, we need to calculate extents/deltas to the pixel level
+    if (effects.shape != DMIR_SHAPE_CUBE) max_level = effects.max_level;
+    
     Vector3S extent;
     calculate_ortho_extent(matrix, &extent, &effects);
     
@@ -1628,7 +1668,7 @@ void render_ortho_alt(RendererInternal* renderer, BatcherInternal* batcher,
     Vector3S deltas[CAGE_SIZE * ORTHO_MAX_SUBDIVISIONS];
     calculate_ortho_deltas(deltas, matrix, 1);
     
-    for (SInt level = 1; level <= effects.max_level; level++) {
+    for (SInt level = 1; level <= max_level; level++) {
         Vector3S* deltasP = deltas + ((level-1) * CAGE_SIZE);
         Vector3S* deltasN = deltas + (level * CAGE_SIZE);
         for (SInt octant = 0; octant < 8; octant++) {
@@ -1644,6 +1684,7 @@ void render_ortho_alt(RendererInternal* renderer, BatcherInternal* batcher,
     stack->position = matrix[3];
     stack->address = subroot;
     stack->level = 0;
+    stack->is_cube = is_cube;
     
     Queue* queues = (octree->is_packed ? batcher->lookups->packed : batcher->lookups->sparse);
     Queue* queues_forward = queues + (((octant_order << 3) | (starting_octant ^ 0b000)) << 8);
@@ -1670,6 +1711,7 @@ void render_ortho_alt(RendererInternal* renderer, BatcherInternal* batcher,
         Rect rect;
         uint8_t mask;
         uint32_t child_start;
+        is_cube = current.is_cube;
         SInt done = render_ortho_cull_draw(
             framebuffer,
             fragments,
@@ -1679,7 +1721,7 @@ void render_ortho_alt(RendererInternal* renderer, BatcherInternal* batcher,
             &rect, &current.rect,
             affine_id, current.address,
             current.level, &effects, dilation,
-            &mask, &child_start,
+            &mask, &child_start, &is_cube,
             queues_forward, (deltas + (current.level * CAGE_SIZE)),
             &map, indices);
         if (done) continue;
@@ -1688,10 +1730,17 @@ void render_ortho_alt(RendererInternal* renderer, BatcherInternal* batcher,
         Queue queue = queues_reverse[mask];
         for (; queue.indices != 0; queue.indices >>= 4, queue.octants >>= 4) {
             SInt octant = (queue.octants & 7);
-            uint32_t address = child_start + (queue.indices & 7);
-            VALIDATE_ADDRESS(address, octree, continue);
+            
+            uint32_t address;
+            if (!is_cube) {
+                address = child_start + (queue.indices & 7);
+                VALIDATE_ADDRESS(address, octree, continue);
+            } else {
+                address = current.address;
+            }
             
             stack++;
+            stack->is_cube = is_cube;
             stack->rect = rect;
             stack->position.x = current.position.x + (deltas[octant].x >> current.level);
             stack->position.y = current.position.y + (deltas[octant].y >> current.level);
@@ -2446,6 +2495,7 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
     stack->level = 0;
     stack->rect = viewport;
     stack->is_behind = (bounds.min_z <= batcher->eye_z);
+    stack->is_cube = FALSE;
     
     uint32_t address = subtree->address;
     VALIDATE_ADDRESS(address, octree, return);
@@ -2532,10 +2582,21 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
         // Skip if not visible
         if ((rect.min_x > rect.max_x) | (rect.min_y > rect.max_y)) continue;
         
+        SInt is_cube = stack->is_cube;
+        
         if (intersects_near_plane) {
             if (is_pixel | is_splat) continue;
         } else {
             Depth depth = z_to_depth(batcher, bounds.min_z);
+            
+            if (is_cube) {
+                is_splat = FALSE;
+                mask = 255;
+            } else if (is_splat & (effects.shape == DMIR_SHAPE_CUBE)) {
+                is_cube = TRUE;
+                is_splat = FALSE;
+                mask = 255;
+            }
             
             #ifndef DMIR_USE_ORTHO
             #ifdef DMIR_USE_SPLAT_PIXEL
@@ -2596,11 +2657,11 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
             
             #ifdef ORTHO_TRAVERSE_ALT
             render_ortho_alt(renderer, batcher, framebuffer, fragments,
-                affine_id, octree, address, sub_effects,
+                affine_id, octree, address, sub_effects, is_cube,
                 stack->grid, (OrthoStackItemAlt*)(stack+1));
             #else
             render_ortho(renderer, batcher, framebuffer, fragments,
-                affine_id, octree, address, sub_effects,
+                affine_id, octree, address, sub_effects, is_cube,
                 stack->grid, (OrthoStackItem*)(stack+1));
             #endif
             continue;
@@ -2625,15 +2686,22 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
         stack->level = (stack-1)->level + 1;
         stack->rect = rect;
         stack->is_behind = intersects_eye_plane;
+        stack->is_cube = is_cube;
         
         SInt is_max_level = (stack->level == effects.max_level);
         Queue queue = queues_reverse[mask];
         for (; queue.indices != 0; queue.indices >>= 4, queue.octants >>= 4) {
-            address = child_start + (queue.indices & 7);
-            VALIDATE_ADDRESS(address, octree, continue);
+            if (!is_cube) {
+                address = child_start + (queue.indices & 7);
+                VALIDATE_ADDRESS(address, octree, continue);
+            }
+            
             stack->octants[stack->count] = (queue.octants & 7);
             stack->addresses[stack->count] = address;
-            if (!is_max_level) {
+            if (is_cube) {
+                stack->subnodes[stack->count] = address;
+                stack->masks[stack->count] = 255;
+            } else if (!is_max_level) {
                 stack->subnodes[stack->count] = *PTR_INDEX(octree->addr, address);
                 stack->masks[stack->count] = *PTR_INDEX(octree->mask, address);
             }

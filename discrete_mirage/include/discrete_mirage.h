@@ -223,6 +223,7 @@ typedef struct DMirOctree {
 // dilation_abs: dilate each node by this amount of pixels.
 // dilation_rel: dilate each node by a fraction of the root
 // octree's cage size (e.g. for sparse point clouds).
+// shape: how the leaf nodes will be rendered.
 typedef struct DMirEffects {
     int32_t max_level;
     float dilation_abs;
@@ -309,6 +310,7 @@ const int32_t DMIR_SHAPE_POINT = 0;
 const int32_t DMIR_SHAPE_RECT = 1;
 const int32_t DMIR_SHAPE_SQUARE = 2;
 const int32_t DMIR_SHAPE_CIRCLE = 3;
+const int32_t DMIR_SHAPE_CUBE = 4;
 
 const struct DMirRect DMIR_RECT_EMPTY = {
     .min_x = INT32_MAX,
