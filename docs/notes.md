@@ -4,6 +4,7 @@
   * [About](#about)
   * [Architecture](#architecture)
   * [Observations](#observations)
+* [Version "proto-1.1.0"](#version-proto-110)
 
 ## Version "proto-1.0.0"
 
@@ -95,3 +96,10 @@ Without further ado, here they are:
 - **Storing the X-map samples:** theoretically, this saves on a bit of computation in each row of "sub-octant map" loop, but it had no measurable effect on performance.
 - [**4x4 blit sequence:**](https://github.com/dairin0d/OctreeSplatting/blob/feature/blit-sequence/Godot/OctreeSplatting/OctreeSplatting/OctreeRenderer.cs#L518) if a node's final rectangle occupies a size of 4x4 pixels or less, it's feasible to process only non-occluded pixels (using a pre-computed look-up table), based on the contents of the stencil buffer. However, calculating the lookup key for arbitrary node positions has an overhead of its own, and in practice it doesn't seem to save enough computation to provide any performance improvements.
 - **Topological sorting:** if octrees are split into smaller subtrees, I was thinking that maybe they could be sorted in a way that would allow subtrees of the same octree to still statistically benefit from shared self-occlusion bitmasks, while also being drawn before/after the subtrees of other octrees to account for depth ordering. However, after more thinking, I realized that a "best" order of subtree rendering is not really possible to determine without knowing what they actually contain, so I stopped pursuing that idea and just implemented a depth-based linked-list merge sort instead :-)
+
+## Version "proto-1.1.0"
+
+This version implements some additional bugfixes and improvements in the renderer logic, as well as a couple of extra features:
+
+* A rudimentary "temporal antialiasing" / "motion blur" example (in the demo)
+* Support for different splat shapes (point, rectangle, square, circle, cube)
