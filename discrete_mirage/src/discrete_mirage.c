@@ -1053,8 +1053,9 @@ void calculate_ortho_extent(Vector3S* matrix, Vector3S* extent, Effects* effects
 Coord calculate_ortho_dilation(Effects* effects, Vector3S* extent) {
     Coord dilation_abs = (Coord)(effects->dilation_abs * SUBPIXEL_SIZE);
     Coord dilation_rel = (Coord)(effects->dilation_rel * 2 * MAX(extent->x, extent->y));
+    dilation_abs += MIN(dilation_rel, DILATION_REL_SIZE_MAX * SUBPIXEL_SIZE);
     if (effects->shape == DMIR_SHAPE_CIRCLE) MAX_UPDATE(dilation_abs, 0);
-    return dilation_abs + MIN(dilation_rel, DILATION_REL_SIZE_MAX * SUBPIXEL_SIZE);
+    return dilation_abs;
 }
 
 void calculate_ortho_deltas(Vector3S* deltas, Vector3S* matrix, int32_t factor) {
