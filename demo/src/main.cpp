@@ -157,10 +157,10 @@ DMirOctree* load_octree(std::string path, int mode) {
         if (mode == OCTREE_LOAD_PACKED) {
             octree->is_packed = true;
             
-            uint count = 1;
+            int count = 1;
             addr[0] = 0;
             
-            for (uint index = 0; index < count; index++) {
+            for (int index = 0; index < count; index++) {
                 auto node_address = *PTR_INDEX(octree->addr, addr[index]);
                 auto node_mask = *PTR_INDEX(octree->mask, addr[index]);
                 auto node_color = *((DMirColor*)PTR_INDEX(octree->data, addr[index]));
@@ -168,7 +168,7 @@ DMirOctree* load_octree(std::string path, int mode) {
                 mask[index] = node_mask;
                 color[index] = node_color;
                 
-                for (uint octant = 0; octant < 8; octant++) {
+                for (int octant = 0; octant < 8; octant++) {
                     if ((node_mask & (1 << octant)) == 0) continue;
                     
                     addr[count] = node_address + octant;
