@@ -1,3 +1,5 @@
+cmake_minimum_required(VERSION 3.10)
+
 add_compile_options(
     # -Ofast # can't use, since we rely on NaNs and infinities
     -O3 -fno-math-errno -fno-trapping-math
