@@ -141,8 +141,8 @@ typedef uint64_t Stencil;
 #define STENCIL_SHIFT_Y 3
 #define STENCIL_LUT_STEP_X 1
 #define STENCIL_LUT_STEP_Y 8
-#define STENCIL_LUT_MASK_X 0x0101010101010101UL
-#define STENCIL_LUT_MASK_Y 0xFFUL
+#define STENCIL_LUT_MASK_X UINT64_C(0x0101010101010101)
+#define STENCIL_LUT_MASK_Y UINT64_C(0xFF)
 #endif
 #else
 typedef uint32_t Stencil;
@@ -1188,7 +1188,7 @@ void calculate_maps(MapInfo* map, Queue* queues_forward,
             // MIN_UPDATE(max64_x, (MAP_SIZE-2));
             // MIN_UPDATE(max64_y, (MAP_SIZE-2));
             
-            uint64_t mask64 = (1UL << octant64) << (octant8 * 8);
+            uint64_t mask64 = (UINT64_C(1) << octant64) << (octant8 * 8);
             
             for (SInt x = min64_x; x <= max64_x; x++) {
                 map->x64[x] |= mask64;
@@ -1204,7 +1204,7 @@ void calculate_maps(MapInfo* map, Queue* queues_forward,
     map->mask_bit1 = 0;
     map->mask_bit2 = 0;
     for (SInt item = 0, queue = map->full_queue; item < 8; item++, queue >>= 4) {
-        uint64_t octant_mask = 255UL << ((queue & 7) * 8);
+        uint64_t octant_mask = UINT64_C(255) << ((queue & 7) * 8);
         if ((item & 1) == 0) map->mask_bit0 |= octant_mask;
         if ((item & 2) == 0) map->mask_bit1 |= octant_mask;
         if ((item & 4) == 0) map->mask_bit2 |= octant_mask;
