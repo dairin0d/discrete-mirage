@@ -528,10 +528,12 @@ void render_scene_to_buffer(ProgramState* state, RGBA32* pixels, int stride, boo
                 pixels_row[x].r = dr >> state->accum_shift;
                 pixels_row[x].g = dg >> state->accum_shift;
                 pixels_row[x].b = db >> state->accum_shift;
+                pixels_row[x].a = 255;
             } else {
                 pixels_row[x].r = color.r;
                 pixels_row[x].g = color.g;
                 pixels_row[x].b = color.b;
+                pixels_row[x].a = 255;
             }
         }
     }
