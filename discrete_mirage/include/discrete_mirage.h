@@ -6,9 +6,9 @@
 // * can render basic in-RAM octrees of a specific layout
 // * front-to-back splatting with occlusion culling
 // * supports cage deformations and splat dilation
+// * supports several splat shapes: points, quads, squares, circles, cubes
 // Limitations:
 // * currently has no support for DAGs or out-of-core rendering
-// * leaf voxels are rendered as quads, not cubes or circles
 
 #ifndef DISCRETE_MIRAGE
 #define DISCRETE_MIRAGE
@@ -86,7 +86,7 @@ const char DMIR_VERSION[] = "proto-1.1.2";
 // #define DMIR_STENCIL_BITS 32
 #define DMIR_STENCIL_BITS 64
 
-// Whether a stencil tile shhould be treated
+// Whether a stencil tile should be treated
 // as a 1D row of bits or a 2D bitmap
 // #define DMIR_STENCIL_1D
 // #define DMIR_STENCIL_2D
