@@ -103,3 +103,7 @@ This version implements some additional bugfixes and improvements in the rendere
 
 * A rudimentary "temporal antialiasing" / "motion blur" example (in the demo)
 * Support for different splat shapes (point, rectangle, square, circle, cube)
+
+## Version "proto-1.1.2"
+
+This version fixes a few bugs I encountered on Windows that I didn't run into when developing the original version on Linux. Also, I switched the demo from SDL2 to RGFW (single-header window abstraction library). Hopefully, now it would be easier for other people to try out this project :-)
