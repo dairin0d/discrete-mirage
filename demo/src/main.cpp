@@ -29,7 +29,9 @@
 #include <fstream>
 #include <thread>
 
-#include <SDL2/SDL.h>
+#define RGFW_BUFFER
+#define RGFW_IMPLEMENTATION
+#include <RGFW.h>
 
 #include "math_utils.hpp"
 
@@ -37,6 +39,14 @@
 
 #define PTR_OFFSET(array, offset) ((typeof(array))(((char*)(array)) + (offset)))
 #define PTR_INDEX(array, index) PTR_OFFSET((array), ((index) * (array##_stride)))
+
+int64_t get_time_ms() {
+    return RGFW_getTimeNS() / 1000000;
+}
+
+struct RGBA32 {
+    uint8_t r, g, b, a;
+};
 
 struct Object3D {
     DMirOctree* octree;
@@ -52,12 +62,19 @@ struct Object3D {
 };
 
 struct ProgramState {
-    SDL_Window* window;
-    SDL_Renderer* renderer;
-    SDL_Texture* texture;
+    RGFW_window* window;
+    int last_mouse_x;
+    int last_mouse_y;
+    
+    #ifndef RGFW_BUFFER
+    std::vector<RGBA32> render_buffer;
+    GLuint gl_texture;
+    #endif
+    
     DMirFramebuffer* dmir_framebuffer;
     DMirBatcher* dmir_batcher;
     std::vector<DMirRenderer*> dmir_renderers;
+    
     int thread_case;
     int thread_count;
     int screen_width;
@@ -248,178 +265,6 @@ struct mat4 calculate_projection_matrix(ProgramState* state) {
     return smat4_inverse(view_matrix);
 }
 
-void reinit_renderer(ProgramState* state) {
-    if (state->renderer) {
-        SDL_DestroyRenderer(state->renderer);
-        state->renderer = nullptr;
-        state->texture = nullptr;
-    }
-    
-    SDL_Surface* surface = SDL_GetWindowSurface(state->window);
-    
-    state->renderer = SDL_CreateSoftwareRenderer(surface);
-    if (!state->renderer) return;
-    
-    SDL_RenderSetVSync(state->renderer, 1);
-    
-    state->texture = SDL_CreateTexture(
-        state->renderer,
-        SDL_PIXELFORMAT_RGB24,
-        SDL_TEXTUREACCESS_STREAMING,
-        state->screen_width,
-        state->screen_height);
-}
-
-void print_state_info(ProgramState* state) {
-    std::cout
-        << "x: " << state->cam_pos.x << ", "
-        << "y: " << state->cam_pos.y << ", "
-        << "z: " << state->cam_pos.z << ", "
-        << "rx: " << state->cam_rot.x << ", "
-        << "ry: " << state->cam_rot.y << ", "
-        << "zoom: " << state->cam_zoom << ", "
-        << "fov: " << state->cam_zoom_fov << ", "
-        << "persp: " << state->frustum.perspective
-        << std::endl;
-}
-
-int process_event(void* data, SDL_Event* event) {
-    ProgramState* state = (ProgramState*)data;
-    
-    bool cam_updated = false;
-    
-    if (event->type == SDL_WINDOWEVENT) {
-        if (event->window.event == SDL_WINDOWEVENT_RESIZED) {
-            SDL_Window* window = SDL_GetWindowFromID(event->window.windowID);
-            if (window == state->window) {
-                reinit_renderer(state);
-            }
-        }
-    } else if (event->type == SDL_QUIT) {
-        state->is_running = false;
-    } else if (event->type == SDL_KEYDOWN) {
-        switch (event->key.keysym.sym) {
-        case SDLK_ESCAPE:
-            state->is_running = false;
-            break;
-        case SDLK_SPACE:
-            state->frustum.perspective = (state->frustum.perspective > 0.5f ? 0 : 1);
-            cam_updated = true;
-            break;
-        case SDLK_COMMA:
-            state->cam_zoom_fov -= 1;
-            cam_updated = true;
-            break;
-        case SDLK_PERIOD:
-            state->cam_zoom_fov += 1;
-            cam_updated = true;
-            break;
-        case SDLK_LEFTBRACKET:
-            state->thread_case -= 1;
-            if (state->thread_case < 0) state->thread_case = 0;
-            break;
-        case SDLK_RIGHTBRACKET:
-            state->thread_case += 1;
-            if (state->thread_case > 8) state->thread_case = 8;
-            break;
-        case SDLK_MINUS:
-            state->max_level -= 1;
-            if (state->max_level < -1) state->max_level = 16;
-            break;
-        case SDLK_EQUALS:
-            state->max_level += 1;
-            if (state->max_level > 16) state->max_level = -1;
-            break;
-        case SDLK_TAB:
-            state->is_depth_mode = !state->is_depth_mode;
-            break;
-        case SDLK_F1:
-            state->splat_shape = DMIR_SHAPE_POINT;
-            break;
-        case SDLK_F2:
-            state->splat_shape = DMIR_SHAPE_RECT;
-            break;
-        case SDLK_F3:
-            state->splat_shape = DMIR_SHAPE_SQUARE;
-            break;
-        case SDLK_F4:
-            state->splat_shape = DMIR_SHAPE_CIRCLE;
-            break;
-        case SDLK_F5:
-            state->splat_shape = DMIR_SHAPE_CUBE;
-            break;
-        case SDLK_F12:
-            state->use_accumulation = !state->use_accumulation;
-            break;
-        }
-    } else if (event->type == SDL_MOUSEBUTTONDOWN) {
-        if (event->button.button == SDL_BUTTON_LEFT) {
-            state->is_cam_orbiting = true;
-        }
-    } else if (event->type == SDL_MOUSEBUTTONUP) {
-        if (event->button.button == SDL_BUTTON_LEFT) {
-            state->is_cam_orbiting = false;
-        }
-    } else if (event->type == SDL_MOUSEWHEEL) {
-        state->cam_zoom += event->wheel.y;
-        cam_updated = true;
-    } else if (event->type == SDL_MOUSEMOTION) {
-        if (state->is_cam_orbiting) {
-            state->cam_rot.y += event->motion.xrel * 0.005f;
-            state->cam_rot.x += event->motion.yrel * 0.005f;
-            cam_updated = true;
-        }
-    }
-    
-    if (cam_updated) print_state_info(state);
-    
-    return 0;
-}
-
-void process_continuous_events(ProgramState* state) {
-    const Uint8* currentKeyStates = SDL_GetKeyboardState(nullptr);
-    
-    auto view_matrix = trs_matrix(state->cam_pos, state->cam_rot, svec3_one());
-    auto view_x_axis = get_matrix_vec3(&view_matrix, 0);
-    auto view_y_axis = get_matrix_vec3(&view_matrix, 1);
-    auto view_z_axis = get_matrix_vec3(&view_matrix, 2);
-    float speed = 0.01f;
-    if (currentKeyStates[SDL_SCANCODE_LSHIFT] | currentKeyStates[SDL_SCANCODE_RSHIFT]) {
-        speed *= 0.1f;
-    }
-    if (currentKeyStates[SDL_SCANCODE_LCTRL] | currentKeyStates[SDL_SCANCODE_RCTRL]) {
-        speed *= 10;
-    }
-    
-    bool cam_updated = false;
-    if (currentKeyStates[SDL_SCANCODE_D]) {
-        state->cam_pos = svec3_add(state->cam_pos, svec3_multiply_f(view_x_axis, speed));
-        cam_updated = true;
-    }
-    if(currentKeyStates[SDL_SCANCODE_A]) {
-        state->cam_pos = svec3_add(state->cam_pos, svec3_multiply_f(view_x_axis, -speed));
-        cam_updated = true;
-    }
-    if(currentKeyStates[SDL_SCANCODE_R]) {
-        state->cam_pos = svec3_add(state->cam_pos, svec3_multiply_f(view_y_axis, speed));
-        cam_updated = true;
-    }
-    if(currentKeyStates[SDL_SCANCODE_F]) {
-        state->cam_pos = svec3_add(state->cam_pos, svec3_multiply_f(view_y_axis, -speed));
-        cam_updated = true;
-    }
-    if(currentKeyStates[SDL_SCANCODE_W]) {
-        state->cam_pos = svec3_add(state->cam_pos, svec3_multiply_f(view_z_axis, speed));
-        cam_updated = true;
-    }
-    if(currentKeyStates[SDL_SCANCODE_S]) {
-        state->cam_pos = svec3_add(state->cam_pos, svec3_multiply_f(view_z_axis, -speed));
-        cam_updated = true;
-    }
-    
-    if (cam_updated) print_state_info(state);
-}
-
 void create_scene(ProgramState* state, DMirOctree* file_octree) {
     if (file_octree != nullptr) {
         state->octrees.push_back(file_octree);
@@ -591,13 +436,7 @@ void setup_renderers(ProgramState* state) {
     }
 }
 
-int render_scene(ProgramState* state) {
-    void* pixels = nullptr;
-    int stride = 0;
-    SDL_LockTexture(state->texture, nullptr, &pixels, &stride);
-    
-    int time = SDL_GetTicks();
-    
+void render_scene_to_buffer(ProgramState* state, RGBA32* pixels, int stride, bool invert_y) {
     if (state->use_accumulation) {
         auto accum_offset = state->accum_offsets[state->accum_index];
         state->frustum.offset_x = accum_offset.x;
@@ -633,7 +472,7 @@ int render_scene(ProgramState* state) {
     int buf_stride = dmir_row_size(state->dmir_framebuffer);
     for (int y = 0; y < state->screen_height; y++) {
         int rev_y = (state->screen_height - 1 - y);
-        DMirColor* pixels_row = (DMirColor*)((uint8_t*)pixels + rev_y * stride);
+        RGBA32* pixels_row = pixels + (invert_y ? rev_y : y) * stride;
         
         int buf_row = y * buf_stride;
         DMirDepth* depths_row = state->dmir_framebuffer->depth + buf_row;
@@ -690,16 +529,44 @@ int render_scene(ProgramState* state) {
                 pixels_row[x].g = dg >> state->accum_shift;
                 pixels_row[x].b = db >> state->accum_shift;
             } else {
-                pixels_row[x] = color;
+                pixels_row[x].r = color.r;
+                pixels_row[x].g = color.g;
+                pixels_row[x].b = color.b;
             }
         }
     }
     
     state->accum_index = (state->accum_index + 1) % state->accum_buffers.size();
+}
+
+int64_t render_scene(ProgramState* state) {
+    auto time = get_time_ms();
     
-    time = SDL_GetTicks() - time;
+    #ifdef RGFW_BUFFER
+    render_scene_to_buffer(state, (RGBA32*)state->window->buffer, RGFW_bufferSize.w, true);
+    #else
+    RGBA32* pixels = state->render_buffer.data();
+    render_scene_to_buffer(state, pixels, state->screen_width, false);
     
-    SDL_UnlockTexture(state->texture);
+    glBindTexture(GL_TEXTURE_2D, state->gl_texture);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, state->screen_width, state->screen_height, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    
+    glClear(GL_COLOR_BUFFER_BIT);
+    
+    glEnable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, state->gl_texture);
+    
+    glBegin(GL_QUADS);
+    glTexCoord2f(0.0f, 0.0f); glVertex2f(-1.0f, -1.0f);
+    glTexCoord2f(1.0f, 0.0f); glVertex2f( 1.0f, -1.0f);
+    glTexCoord2f(1.0f, 1.0f); glVertex2f( 1.0f,  1.0f);
+    glTexCoord2f(0.0f, 1.0f); glVertex2f(-1.0f,  1.0f);
+    glEnd();
+    
+    glBindTexture(GL_TEXTURE_2D, 0);
+    #endif
+    
+    time = get_time_ms() - time;
     
     return time;
 }
@@ -732,14 +599,177 @@ int* make_accum_weights(int count, float base, int denominator) {
     return iweights;
 }
 
-int main(int argc, char* argv[]) {
-    SDL_LogSetPriority(SDL_LOG_CATEGORY_APPLICATION, SDL_LOG_PRIORITY_INFO);
+void print_state_info(ProgramState* state) {
+    std::cout
+        << "x: " << state->cam_pos.x << ", "
+        << "y: " << state->cam_pos.y << ", "
+        << "z: " << state->cam_pos.z << ", "
+        << "rx: " << state->cam_rot.x << ", "
+        << "ry: " << state->cam_rot.y << ", "
+        << "zoom: " << state->cam_zoom << ", "
+        << "fov: " << state->cam_zoom_fov << ", "
+        << "persp: " << state->frustum.perspective
+        << std::endl;
+}
+
+void process_event(ProgramState* state) {
+    bool cam_updated = false;
     
-    if (SDL_Init(SDL_INIT_VIDEO) != 0) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "SDL_Init fail : %s\n", SDL_GetError());
-        return 1;
+    auto event = &state->window->event;
+    
+    if (event->type == RGFW_windowResized) {
+        // Maybe add support for resizing later
+    } else if (event->type == RGFW_quit) {
+        state->is_running = false;
+    } else if (event->type == RGFW_keyPressed) {
+        switch (event->keyCode) {
+        case RGFW_Escape:
+            state->is_running = false;
+            break;
+        case RGFW_Space:
+            state->frustum.perspective = (state->frustum.perspective > 0.5f ? 0 : 1);
+            cam_updated = true;
+            break;
+        case RGFW_Comma:
+            state->cam_zoom_fov -= 1;
+            cam_updated = true;
+            break;
+        case RGFW_Period:
+            state->cam_zoom_fov += 1;
+            cam_updated = true;
+            break;
+        case RGFW_Bracket:
+            state->thread_case -= 1;
+            if (state->thread_case < 0) state->thread_case = 0;
+            break;
+        case RGFW_CloseBracket:
+            state->thread_case += 1;
+            if (state->thread_case > 8) state->thread_case = 8;
+            break;
+        case RGFW_Minus:
+            state->max_level -= 1;
+            if (state->max_level < -1) state->max_level = 16;
+            break;
+        case RGFW_Equals:
+            state->max_level += 1;
+            if (state->max_level > 16) state->max_level = -1;
+            break;
+        case RGFW_Tab:
+            state->is_depth_mode = !state->is_depth_mode;
+            break;
+        case RGFW_F1:
+            state->splat_shape = DMIR_SHAPE_POINT;
+            break;
+        case RGFW_F2:
+            state->splat_shape = DMIR_SHAPE_RECT;
+            break;
+        case RGFW_F3:
+            state->splat_shape = DMIR_SHAPE_SQUARE;
+            break;
+        case RGFW_F4:
+            state->splat_shape = DMIR_SHAPE_CIRCLE;
+            break;
+        case RGFW_F5:
+            state->splat_shape = DMIR_SHAPE_CUBE;
+            break;
+        case RGFW_F12:
+            state->use_accumulation = !state->use_accumulation;
+            break;
+        }
+    } else if (event->type == RGFW_mouseButtonPressed) {
+        if (event->button == RGFW_mouseLeft) {
+            state->is_cam_orbiting = true;
+            state->last_mouse_x = event->point.x;
+            state->last_mouse_y = event->point.y;
+            RGFW_window_mouseHold(state->window, RGFW_AREA(state->window->r.w, state->window->r.h));
+            RGFW_window_showMouse(state->window, RGFW_FALSE);
+        } else if ((event->button == RGFW_mouseScrollDown) || (event->button == RGFW_mouseScrollUp)) {
+            state->cam_zoom += event->scroll;
+            cam_updated = true;
+        }
+    } else if (event->type == RGFW_mouseButtonReleased) {
+        if (event->button == RGFW_mouseLeft) {
+            state->is_cam_orbiting = false;
+            RGFW_window_showMouse(state->window, RGFW_TRUE);
+            RGFW_window_mouseUnhold(state->window);
+            int restored_x = state->window->r.x + state->last_mouse_x;
+            int restored_y = state->window->r.y + state->last_mouse_y;
+            RGFW_window_moveMouse(state->window, RGFW_POINT(restored_x, restored_y));
+        }
+    } else if (event->type == RGFW_mousePosChanged) {
+        if (state->is_cam_orbiting) {
+            // In "mouse hold" mode, point contains delta rather than absolute position
+            state->cam_rot.y += event->point.x * 0.005f;
+            state->cam_rot.x += event->point.y * 0.005f;
+            cam_updated = true;
+        }
     }
     
+    if (cam_updated) print_state_info(state);
+}
+
+void process_continuous_events(ProgramState* state) {
+    auto view_matrix = trs_matrix(state->cam_pos, state->cam_rot, svec3_one());
+    auto view_x_axis = get_matrix_vec3(&view_matrix, 0);
+    auto view_y_axis = get_matrix_vec3(&view_matrix, 1);
+    auto view_z_axis = get_matrix_vec3(&view_matrix, 2);
+    float speed = 0.01f;
+    
+    // A bit of protection against "endless movement" in case
+    // some other window suddenly snatches the focus from ours
+    if (!state->window->event.inFocus) return;
+    
+    if (RGFW_isPressed(state->window, RGFW_ShiftL) | RGFW_isPressed(state->window, RGFW_ShiftR)) {
+        speed *= 0.1f;
+    }
+    if (RGFW_isPressed(state->window, RGFW_ControlL) | RGFW_isPressed(state->window, RGFW_ControlR)) {
+        speed *= 10;
+    }
+    
+    bool cam_updated = false;
+    if (RGFW_isPressed(state->window, RGFW_d)) {
+        state->cam_pos = svec3_add(state->cam_pos, svec3_multiply_f(view_x_axis, speed));
+        cam_updated = true;
+    }
+    if (RGFW_isPressed(state->window, RGFW_a)) {
+        state->cam_pos = svec3_add(state->cam_pos, svec3_multiply_f(view_x_axis, -speed));
+        cam_updated = true;
+    }
+    if (RGFW_isPressed(state->window, RGFW_r)) {
+        state->cam_pos = svec3_add(state->cam_pos, svec3_multiply_f(view_y_axis, speed));
+        cam_updated = true;
+    }
+    if (RGFW_isPressed(state->window, RGFW_f)) {
+        state->cam_pos = svec3_add(state->cam_pos, svec3_multiply_f(view_y_axis, -speed));
+        cam_updated = true;
+    }
+    if (RGFW_isPressed(state->window, RGFW_w)) {
+        state->cam_pos = svec3_add(state->cam_pos, svec3_multiply_f(view_z_axis, speed));
+        cam_updated = true;
+    }
+    if (RGFW_isPressed(state->window, RGFW_s)) {
+        state->cam_pos = svec3_add(state->cam_pos, svec3_multiply_f(view_z_axis, -speed));
+        cam_updated = true;
+    }
+    
+    if (cam_updated) print_state_info(state);
+}
+
+void process_events(ProgramState* state) {
+    // For some reason, RGFW's event-checking stop condition
+    // can happen before all events are processed (e.g. when
+    // both keyboard and mouse events are active), but
+    // running the loop twice seems to fix the problem.
+    for (int i = 0; i < 2; i++) {
+        while (RGFW_window_checkEvent(state->window)) {
+            process_event(state);
+        }
+    }
+    
+    process_continuous_events(state);
+}
+
+int main(int argc, char* argv[]) {
     ProgramState state = {
         .thread_case = 0,
         .thread_count = 1,
@@ -757,28 +787,20 @@ int main(int argc, char* argv[]) {
     
     std::string window_title = "Discrete Mirage";
     
-    state.window = SDL_CreateWindow(
+    state.window = RGFW_createWindow(
         window_title.c_str(),
-        SDL_WINDOWPOS_UNDEFINED,
-        SDL_WINDOWPOS_UNDEFINED,
-        state.screen_width,
-        state.screen_height,
-        SDL_WINDOW_RESIZABLE
+        RGFW_RECT(0, 0, state.screen_width, state.screen_height),
+        (u16)(RGFW_CENTER | RGFW_NO_RESIZE)
     );
     
-    if (!state.window) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Window creation fail : %s\n", SDL_GetError());
-        return 1;
-    }
-    
-    reinit_renderer(&state);
-    
-    if (!state.renderer) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Render creation for surface fail : %s\n", SDL_GetError());
-        return 1;
-    }
-    
-    SDL_AddEventWatch(process_event, &state);
+    #ifndef RGFW_BUFFER
+    state.render_buffer.resize(state.screen_width * state.screen_height);
+    glGenTextures(1, &state.gl_texture);
+    glBindTexture(GL_TEXTURE_2D, state.gl_texture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, state.screen_width, state.screen_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    #endif
     
     state.viewport = {
         .min_x = 0,
@@ -830,34 +852,29 @@ int main(int argc, char* argv[]) {
     int frame_time_min = (int)(1000.0f / max_fps);
     int next_frame_update = 0;
     
-    auto last_title_update = SDL_GetTicks();
+    auto last_title_update = get_time_ms();
     int frame_time_update_period = 500;
     
-    int accum_time = 0;
-    int accum_count = 0;
+    int64_t accum_time = 0;
+    int64_t accum_count = 0;
     
     state.frame_count = 0;
     
     std::string frame_time_ms = "? ms";
     
-    while (state.is_running) {
-        SDL_PumpEvents();
+    while (state.is_running && !RGFW_window_shouldClose(state.window)) {
+        process_events(&state);
         
-        if (!state.renderer) break;
-        
-        process_continuous_events(&state);
-        
-        SDL_RenderClear(state.renderer);
+        // SDL_RenderClear(state.renderer);
         
         accum_time += render_scene(&state);
         accum_count++;
         
-        // SDL_RenderTexture() in SDL3
-        SDL_RenderCopy(state.renderer, state.texture, nullptr, nullptr);
+        // SDL_RenderCopy(state.renderer, state.texture, nullptr, nullptr);
         
-        SDL_UpdateWindowSurface(state.window);
+        RGFW_window_swapBuffers(state.window);
         
-        auto time = SDL_GetTicks();
+        auto time = get_time_ms();
         
         if ((time - last_title_update > frame_time_update_period) & (accum_count > 0)) {
             last_title_update = time;
@@ -872,11 +889,11 @@ int main(int argc, char* argv[]) {
         std::string title = window_title + ": " +
             frame_time_ms + ", " +
             std::to_string(state.thread_count) + " thread(s)";
-        SDL_SetWindowTitle(state.window, title.c_str());
+        RGFW_window_setName(state.window, (char*)(title.c_str()));
         
         auto frame_remainder = next_frame_update - (int)time;
         if (frame_remainder > 0) {
-            SDL_Delay(frame_remainder);
+            RGFW_sleep(frame_remainder);
         }
         next_frame_update = time + frame_time_min;
         
@@ -906,6 +923,7 @@ int main(int argc, char* argv[]) {
     dmir_batcher_free(state.dmir_batcher);
     dmir_framebuffer_free(state.dmir_framebuffer);
     
-    SDL_Quit();
+    RGFW_window_close(state.window);
+    
     return 0;
 }
