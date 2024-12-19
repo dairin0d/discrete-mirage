@@ -22,6 +22,12 @@
 *
 */
 
+/* 
+* Local Modifications:
+* - Added explicit cast for LoadImageA return value to match HICON type.
+* - This change was made on 2024-12-19 by dairin0d to resolve compilation issues on Windows 10 with MinGW.
+*/
+
 /*
 	(MAKE SURE RGFW_IMPLEMENTATION is in exactly one header or you use -D RGFW_IMPLEMENTATION)
 	#define RGFW_IMPLEMENTATION - makes it so source code is included with header
@@ -5383,9 +5389,11 @@ RGFW_UNUSED(win); /*!< if buffer rendering is not being used */
 		Class.hCursor = LoadCursor(NULL, IDC_ARROW);
 		Class.lpfnWndProc = WndProc;
 
-		Class.hIcon = LoadImageA(GetModuleHandleW(NULL), "RGFW_ICON", IMAGE_ICON, 0, 0, LR_DEFAULTSIZE | LR_SHARED);		
+		// 2024-12-19 local fix: explicit cast added to LoadImageA return value to match HICON type.
+   		// This change was made due to compilation issues on Windows 10 with MinGW.
+		Class.hIcon = (HICON)LoadImageA(GetModuleHandleW(NULL), "RGFW_ICON", IMAGE_ICON, 0, 0, LR_DEFAULTSIZE | LR_SHARED);		
 		if (Class.hIcon == NULL) {
-            Class.hIcon = LoadImageA(NULL, IDI_APPLICATION, IMAGE_ICON, 0, 0, LR_DEFAULTSIZE | LR_SHARED);
+            Class.hIcon = (HICON)LoadImageA(NULL, IDI_APPLICATION, IMAGE_ICON, 0, 0, LR_DEFAULTSIZE | LR_SHARED);
         }
 
 		RegisterClassA(&Class);
