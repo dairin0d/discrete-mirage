@@ -902,6 +902,10 @@ int main(int argc, char* argv[]) {
         state.frame_count++;
     }
     
+    #ifndef RGFW_BUFFER
+    glDeleteTextures(1, &state.gl_texture);
+    #endif
+    
     delete state.accum_weights_lin;
     delete state.accum_weights_exp;
     
