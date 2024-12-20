@@ -67,9 +67,10 @@ struct ProgramState {
     int last_mouse_y;
     
     #ifndef RGFW_BUFFER
-    std::vector<RGBA32> render_buffer;
     GLuint gl_texture;
     #endif
+    
+    std::vector<RGBA32> render_buffer;
     
     DMirFramebuffer* dmir_framebuffer;
     DMirBatcher* dmir_batcher;
@@ -436,7 +437,7 @@ void setup_renderers(ProgramState* state) {
     }
 }
 
-void render_scene_to_buffer(ProgramState* state, RGBA32* pixels, int stride, bool invert_y) {
+void render_scene_to_buffer(ProgramState* state, RGBA32* pixels, int stride) {
     if (state->use_accumulation) {
         auto accum_offset = state->accum_offsets[state->accum_index];
         state->frustum.offset_x = accum_offset.x;
@@ -471,8 +472,7 @@ void render_scene_to_buffer(ProgramState* state, RGBA32* pixels, int stride, boo
     
     int buf_stride = dmir_row_size(state->dmir_framebuffer);
     for (int y = 0; y < state->screen_height; y++) {
-        int rev_y = (state->screen_height - 1 - y);
-        RGBA32* pixels_row = pixels + (invert_y ? rev_y : y) * stride;
+        RGBA32* pixels_row = pixels + y * stride;
         
         int buf_row = y * buf_stride;
         DMirDepth* depths_row = state->dmir_framebuffer->depth + buf_row;
@@ -544,14 +544,39 @@ void render_scene_to_buffer(ProgramState* state, RGBA32* pixels, int stride, boo
 int64_t render_scene(ProgramState* state) {
     auto time = get_time_ms();
     
-    #ifdef RGFW_BUFFER
-    render_scene_to_buffer(state, (RGBA32*)state->window->buffer, RGFW_bufferSize.w, true);
-    #else
     RGBA32* pixels = state->render_buffer.data();
-    render_scene_to_buffer(state, pixels, state->screen_width, false);
+    render_scene_to_buffer(state, pixels, state->screen_width);
     
+    #ifdef RGFW_BUFFER
+    const int shift = 16;
+    int win_w = state->window->r.w;
+    int win_h = state->window->r.h;
+    if (win_w < 1) win_w = 1;
+    if (win_h < 1) win_h = 1;
+    if (win_w > RGFW_bufferSize.w) win_w = RGFW_bufferSize.w;
+    if (win_h > RGFW_bufferSize.h) win_h = RGFW_bufferSize.h;
+    
+    int scale_x = ((1 << shift) * state->screen_width) / win_w;
+    int offset_x = scale_x >> 1;
+    int scale_y = ((1 << shift) * state->screen_height) / win_h;
+    int offset_y = scale_y >> 1;
+    
+    RGBA32* window_pixels = (RGBA32*)state->window->buffer;
+    for (int win_y = 0; win_y < win_h; win_y++) {
+        int rev_y = (win_h - 1) - win_y;
+        int y = (rev_y * scale_y + offset_y) >> shift;
+        RGBA32* win_row = window_pixels + win_y * RGFW_bufferSize.w;
+        RGBA32* pix_row = pixels + y * state->screen_width;
+        for (int win_x = 0; win_x < win_w; win_x++) {
+            int x = (win_x * scale_x + offset_x) >> shift;
+            win_row[win_x] = pix_row[x];
+        }
+    }
+    #else
     glBindTexture(GL_TEXTURE_2D, state->gl_texture);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, state->screen_width, state->screen_height, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    
+    glViewport(0, 0, state->window->r.w, state->window->r.h);
     
     glClear(GL_COLOR_BUFFER_BIT);
     
@@ -619,9 +644,7 @@ void process_event(ProgramState* state) {
     
     auto event = &state->window->event;
     
-    if (event->type == RGFW_windowResized) {
-        // Maybe add support for resizing later
-    } else if (event->type == RGFW_quit) {
+    if (event->type == RGFW_quit) {
         state->is_running = false;
     } else if (event->type == RGFW_keyPressed) {
         switch (event->keyCode) {
@@ -792,11 +815,12 @@ int main(int argc, char* argv[]) {
     state.window = RGFW_createWindow(
         window_title.c_str(),
         RGFW_RECT(0, 0, state.screen_width, state.screen_height),
-        (u16)(RGFW_CENTER | RGFW_NO_RESIZE)
+        (u16)(RGFW_CENTER)
     );
     
+    state.render_buffer.resize(state.screen_width * state.screen_height, {.r = 0, .g = 0, .b = 0, .a = 255});
+    
     #ifndef RGFW_BUFFER
-    state.render_buffer.resize(state.screen_width * state.screen_height);
     glGenTextures(1, &state.gl_texture);
     glBindTexture(GL_TEXTURE_2D, state.gl_texture);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, state.screen_width, state.screen_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
