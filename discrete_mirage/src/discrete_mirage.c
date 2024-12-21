@@ -54,8 +54,8 @@ typedef uint32_t UInt;
 typedef int64_t SInt;
 typedef uint64_t UInt;
 #else
-typedef int SInt;
-typedef unsigned int UInt;
+typedef int_fast32_t SInt;
+typedef uint_fast32_t UInt;
 #endif
 
 #ifdef DMIR_COORD_FIXED

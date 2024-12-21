@@ -112,3 +112,6 @@ This version fixes a few bugs I encountered on Windows that I didn't run into wh
 
 To simplify further development, some options were removed:
 * Color splatting (now the library is fully agnostic of the data stored in voxels)
+
+Changes introduced in this version:
+* Switched from compiler's default (u)int to (u)int_fast32_t when no specific int size is defined

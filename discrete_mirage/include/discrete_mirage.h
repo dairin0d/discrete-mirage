@@ -40,7 +40,7 @@ const char DMIR_VERSION[] = "1.2.0";
 // #define DMIR_COORD_FLOAT
 
 // Size of integer types used in some calculations
-// (defaults to C compiler's int)
+// (defaults to int_fast32_t / uint_fast32_t)
 // #define DMIR_INT_SIZE 32
 // #define DMIR_INT_SIZE 64
 
