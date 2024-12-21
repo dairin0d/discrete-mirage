@@ -229,6 +229,12 @@ typedef uint32_t Stencil;
 #define VALIDATE_ADDRESS(address, octree, stop)
 #endif
 
+#ifdef DMIR_CALCULATE_STATS
+#define STAT_INCREMENT(framebuffer, stat) (framebuffer)->api.stats[(stat)]++;
+#else
+#define STAT_INCREMENT(framebuffer, stat)
+#endif
+
 typedef DMirBool Bool;
 typedef DMirDepth Depth;
 typedef DMirRect Rect;
@@ -538,7 +544,10 @@ static inline SInt is_occluded_quad(FramebufferInternal* framebuffer, Rect* rect
                 (stencil_x[rect->min_x - tx] ^ stencil_x[rect->max_x - tx + 1]) &
                 (stencil_y[rect->min_y - ty] ^ stencil_y[rect->max_y - ty + 1]);
             if (depth >= tile->depth) pixel_mask &= tile->scene;
-            if (pixel_mask != 0) return FALSE;
+            if (pixel_mask != 0) {
+                STAT_INCREMENT(framebuffer, DMIR_OCCLUSIONS_PASSED);
+                return FALSE;
+            }
         }
         #ifdef DMIR_SKIP_OCCLUDED_ROWS
         rect->min_y = ty + STENCIL_SIZE_Y;
@@ -548,7 +557,10 @@ static inline SInt is_occluded_quad(FramebufferInternal* framebuffer, Rect* rect
     for (SInt y = rect->min_y; y <= rect->max_y; y++) {
         SInt row = PIXEL_INDEX(framebuffer, 0, y);
         for (SInt x = rect->min_x; x <= rect->max_x; x++) {
-            if (framebuffer->api.depth[row+x] > depth) return FALSE;
+            if (framebuffer->api.depth[row+x] > depth) {
+                STAT_INCREMENT(framebuffer, DMIR_OCCLUSIONS_PASSED);
+                return FALSE;
+            }
         }
         #ifdef DMIR_SKIP_OCCLUDED_ROWS
         rect->min_y = y + 1;
@@ -556,6 +568,7 @@ static inline SInt is_occluded_quad(FramebufferInternal* framebuffer, Rect* rect
     }
     #endif
     
+    STAT_INCREMENT(framebuffer, DMIR_OCCLUSIONS_FAILED);
     return TRUE;
 }
 
@@ -1303,6 +1316,8 @@ static inline SInt render_ortho_cull_draw(
     if (size_max == 0) {
         if (depth < min_depth) return TRUE;
         
+        STAT_INCREMENT(framebuffer, DMIR_SPLATS_1PX);
+        
         CHECK_AND_WRITE_STENCIL(framebuffer, rect->min_x, rect->min_y, return TRUE);
         SPLAT(framebuffer, fragments, rect->min_x, rect->min_y, position->z,
             affine_id, address, octree, return TRUE);
@@ -1334,6 +1349,8 @@ static inline SInt render_ortho_cull_draw(
     // Splat if this is a leaf node or reached max displayed level
     if (is_splat) {
         if (depth < min_depth) return TRUE;
+        
+        STAT_INCREMENT(framebuffer, DMIR_SPLATS_LEAF);
         
         if (effects->shape == DMIR_SHAPE_CIRCLE) {
             draw_circle(framebuffer, fragments, octree, affine_id, address, position, extent, rect);
@@ -1373,6 +1390,8 @@ static inline SInt render_ortho_cull_draw(
     if (size_max <= 1) {
         if (depth < min_depth) return TRUE;
         
+        STAT_INCREMENT(framebuffer, DMIR_SPLATS_2PX);
+        
         Queue queue = queues_forward[*mask];
         for (; queue.indices != 0; queue.indices >>= 4, queue.octants >>= 4) {
             SInt octant = (queue.octants & 7);
@@ -1401,6 +1420,8 @@ static inline SInt render_ortho_cull_draw(
     
     #ifdef USE_MAP
     if (size_max < map->size8) {
+        STAT_INCREMENT(framebuffer, DMIR_SPLATS_2PX);
+        
         Coord min_mx = PIXEL_TO_COORD(rect->min_x) - (position->x - (map->half >> level));
         Coord min_my = PIXEL_TO_COORD(rect->min_y) - (position->y - (map->half >> level));
         SInt map_shift = map->shift - level;
@@ -1456,6 +1477,12 @@ static inline SInt render_ortho_cull_draw(
         }
         
         SInt use_suboctants = (size_max >= map->size36) & (level != (effects->max_level-1));
+        
+        if (use_suboctants) {
+            STAT_INCREMENT(framebuffer, DMIR_SPLATS_4PX);
+        } else {
+            STAT_INCREMENT(framebuffer, DMIR_SPLATS_3PX);
+        }
         
         Coord mx, my;
         SInt x, y;
@@ -1594,6 +1621,8 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
         }
         
         grid_initialized:;
+        
+        STAT_INCREMENT(framebuffer, DMIR_NODES_ORTHO);
         
         Rect rect;
         uint8_t mask;
@@ -1755,6 +1784,10 @@ void dmir_framebuffer_clear(Framebuffer* framebuffer_ptr) {
             stencil_row[tx].update = 0;
         }
         stencil_row += stencil_row_step;
+    }
+    
+    for (SInt stat_id = 0; stat_id < DMIR_STATS_COUNT; stat_id++) {
+        framebuffer->api.stats[stat_id] = 0;
     }
 }
 
@@ -1976,6 +2009,8 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer_ptr,
         calculate_screen_bounds(stack->grid, &bounds, &max_scale);
         
         grid_initialized:;
+        
+        STAT_INCREMENT(framebuffer, DMIR_NODES_BATCHED);
         
         if (bounds.min_z >= frustum_bounds.max_z) continue;
         
@@ -2411,6 +2446,8 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
         calculate_screen_bounds(stack->grid, &bounds, &max_scale);
         
         grid_initialized:;
+        
+        STAT_INCREMENT(framebuffer, DMIR_NODES_CAGE);
         
         if (bounds.min_z >= frustum_bounds.max_z) continue;
         

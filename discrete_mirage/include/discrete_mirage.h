@@ -125,6 +125,9 @@ const char DMIR_VERSION[] = "1.2.0";
 // contain valid node addresses everywhere
 #define DMIR_VALIDATE_ADDRESSES
 
+// Whether to count the diagnostic stats
+#define DMIR_CALCULATE_STATS
+
 // ===================================================== //
 
 typedef uint8_t DMirBool;
@@ -221,6 +224,21 @@ typedef struct DMirVoxelRef {
     uint32_t address;
 } DMirVoxelRef;
 
+// An enumeration of diagnostic stats for a framebuffer
+enum DMirStats {
+    DMIR_NODES_BATCHED,
+    DMIR_NODES_CAGE,
+    DMIR_NODES_ORTHO,
+    DMIR_OCCLUSIONS_FAILED,
+    DMIR_OCCLUSIONS_PASSED,
+    DMIR_SPLATS_LEAF,
+    DMIR_SPLATS_1PX,
+    DMIR_SPLATS_2PX,
+    DMIR_SPLATS_3PX,
+    DMIR_SPLATS_4PX,
+    DMIR_STATS_COUNT
+};
+
 // The public (API) part of a framebuffer object.
 // None of its fields are supposed to be changed manually.
 // size_x, size_y: buffer's width and height.
@@ -238,6 +256,7 @@ typedef struct DMirFramebuffer {
     uint32_t stencil_size_y;
     uint32_t stencil_count_x;
     uint32_t stencil_count_y;
+    uint32_t stats[DMIR_STATS_COUNT];
 } DMirFramebuffer;
 
 // The public (API) part of a batcher object.

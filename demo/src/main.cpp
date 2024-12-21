@@ -626,6 +626,22 @@ int* make_accum_weights(int count, float base, int denominator) {
     return iweights;
 }
 
+void print_stats(ProgramState* state) {
+    auto stats = state->dmir_framebuffer->stats;
+    std::cout
+        << stats[DMIR_NODES_BATCHED] << " batched; "
+        << stats[DMIR_NODES_CAGE] << " cages; "
+        << stats[DMIR_NODES_ORTHO] << " ortho; "
+        << stats[DMIR_OCCLUSIONS_FAILED] << " failed; "
+        << stats[DMIR_OCCLUSIONS_PASSED] << " passed; "
+        << stats[DMIR_SPLATS_LEAF] << " leaves; "
+        << stats[DMIR_SPLATS_1PX] << " 1px; "
+        << stats[DMIR_SPLATS_2PX] << " 2px; "
+        << stats[DMIR_SPLATS_3PX] << " 3px; "
+        << stats[DMIR_SPLATS_4PX] << " 4px; "
+        << std::endl;
+}
+
 void print_state_info(ProgramState* state) {
     std::cout
         << "x: " << state->cam_pos.x << ", "
@@ -891,12 +907,10 @@ int main(int argc, char* argv[]) {
     while (state.is_running && !RGFW_window_shouldClose(state.window)) {
         process_events(&state);
         
-        // SDL_RenderClear(state.renderer);
-        
         accum_time += render_scene(&state);
         accum_count++;
         
-        // SDL_RenderCopy(state.renderer, state.texture, nullptr, nullptr);
+        // print_stats(&state);
         
         RGFW_window_swapBuffers(state.window);
         

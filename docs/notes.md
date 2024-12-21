@@ -118,3 +118,4 @@ To simplify further development, some options were removed:
 
 Changes introduced in this version:
 * Switched from compiler's default (u)int to (u)int_fast32_t when no specific int size is defined
+* Added some diagnostic stats (basically, how many nodes of various types were processed)
