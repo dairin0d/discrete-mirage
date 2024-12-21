@@ -107,3 +107,8 @@ This version implements some additional bugfixes and improvements in the rendere
 ## Version "proto-1.1.2"
 
 This version fixes a few bugs I encountered on Windows that I didn't run into when developing the original version on Linux. Also, I switched the demo from SDL2 to RGFW (single-header window abstraction library). Hopefully, now it would be easier for other people to try out this project :-)
+
+## Version "1.2.0"
+
+To simplify further development, some options were removed:
+* Color splatting (now the library is fully agnostic of the data stored in voxels)

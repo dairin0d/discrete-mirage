@@ -44,6 +44,10 @@ int64_t get_time_ms() {
     return RGFW_getTimeNS() / 1000000;
 }
 
+struct RGB24 {
+    uint8_t r, g, b;
+};
+
 struct RGBA32 {
     uint8_t r, g, b, a;
 };
@@ -106,7 +110,7 @@ struct ProgramState {
     int accum_shift;
     int accum_index;
     std::vector<struct vec2> accum_offsets;
-    std::vector<DMirColor*> accum_buffers;
+    std::vector<RGB24*> accum_buffers;
     int* accum_weights_lin;
     int* accum_weights_exp;
 };
@@ -170,7 +174,7 @@ DMirOctree* load_octree(std::string path, int mode) {
         char* new_data = new char[octree->count * (4 + 1 + 3)];
         uint32_t* addr = (uint32_t*)new_data;
         uint8_t* mask = (uint8_t*)(((char*)addr) + octree->count*4);
-        DMirColor* color = (DMirColor*)(mask + octree->count*1);
+        RGB24* color = (RGB24*)(mask + octree->count*1);
         
         if (mode == OCTREE_LOAD_PACKED) {
             octree->is_packed = true;
@@ -181,7 +185,7 @@ DMirOctree* load_octree(std::string path, int mode) {
             for (int index = 0; index < count; index++) {
                 auto node_address = *PTR_INDEX(octree->addr, addr[index]);
                 auto node_mask = *PTR_INDEX(octree->mask, addr[index]);
-                auto node_color = *((DMirColor*)PTR_INDEX(octree->data, addr[index]));
+                auto node_color = *((RGB24*)PTR_INDEX(octree->data, addr[index]));
                 addr[index] = count;
                 mask[index] = node_mask;
                 color[index] = node_color;
@@ -205,7 +209,7 @@ DMirOctree* load_octree(std::string path, int mode) {
             for (int i = 0; i < octree->count; i++) {
                 addr[i] = *PTR_INDEX(octree->addr, i);
                 mask[i] = *PTR_INDEX(octree->mask, i);
-                color[i] = *((DMirColor*)PTR_INDEX(octree->data, i));
+                color[i] = *((RGB24*)PTR_INDEX(octree->data, i));
             }
         }
         
@@ -459,9 +463,9 @@ void render_scene_to_buffer(ProgramState* state, RGBA32* pixels, int stride) {
     dmir_batcher_affine_get(state->dmir_batcher, &affine_infos, &affine_count);
     
     int accum_bias = (1 << state->accum_shift) >> 1;
-    auto rows_start = std::vector<DMirColor*>{};
+    auto rows_start = std::vector<RGB24*>{};
     rows_start.reserve(state->accum_count);
-    auto rows_y = std::vector<DMirColor*>{};
+    auto rows_y = std::vector<RGB24*>{};
     rows_y.reserve(state->accum_count);
     for (int j = 0; j < state->accum_count; j++) {
         int buf_index = (state->accum_index - j + state->accum_count) % state->accum_count;
@@ -484,7 +488,7 @@ void render_scene_to_buffer(ProgramState* state, RGBA32* pixels, int stride) {
         auto rows = rows_y.data();
         
         for (int x = 0; x < state->screen_width; x++) {
-            DMirColor color;
+            RGB24 color;
             if (state->is_depth_mode) {
                 #ifdef DMIR_DEPTH_INT32
                 color.g = depths_row[x] >> 18;
@@ -494,18 +498,14 @@ void render_scene_to_buffer(ProgramState* state, RGBA32* pixels, int stride) {
                 color.r = color.g;
                 color.b = color.g;
             } else {
-                #ifdef DMIR_USE_SPLAT_COLOR
-                color = state->dmir_framebuffer->color[buf_row+x];
-                #else
                 if (voxels_row[x].affine_id < 0) {
                     color = {.r = 0, .g = 196, .b = 255};
                 } else {
                     auto affine_info = &affine_infos[voxels_row[x].affine_id];
                     auto octree = affine_info->octree;
                     uint8_t* data_ptr = PTR_INDEX(octree->data, voxels_row[x].address);
-                    color = *((DMirColor*)data_ptr);
+                    color = *((RGB24*)data_ptr);
                 }
-                #endif
             }
             
             if (state->use_accumulation) {
@@ -857,7 +857,7 @@ int main(int argc, char* argv[]) {
         auto acc_x = (((i >> 0) & 1) - 0.5f) * 0.5f;
         auto acc_y = (((i >> 1) & 1) - 0.5f) * 0.5f;
         state.accum_offsets.push_back(svec2(acc_x, acc_y));
-        auto accum_buf = new DMirColor[state.screen_width * state.screen_height];
+        auto accum_buf = new RGB24[state.screen_width * state.screen_height];
         state.accum_buffers.push_back(accum_buf);
     }
     

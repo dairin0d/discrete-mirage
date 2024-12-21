@@ -21,7 +21,7 @@ extern "C" {
 
 // ===================================================== //
 
-const char DMIR_VERSION[] = "proto-1.1.2";
+const char DMIR_VERSION[] = "1.2.0";
 
 // ===================================================== //
 
@@ -104,11 +104,6 @@ const char DMIR_VERSION[] = "proto-1.1.2";
 
 // These options deal with how nodes are drawn / splatted
 
-// Whether to draw directtly to the color buffer, or to
-// write voxel addressing information, from which color
-// would have to be determined in user code's post-process
-// #define DMIR_USE_SPLAT_COLOR
-
 // Whether to write pixels immediately or to postpone it
 // until the end of current subtree's rendering
 #define DMIR_USE_SPLAT_DEFERRED
@@ -161,12 +156,6 @@ typedef float DMirDepth;
 const float DMIR_MAX_DEPTH = INFINITY;
 #endif
 
-typedef struct DMirColor {
-    uint8_t r;
-    uint8_t g;
-    uint8_t b;
-} DMirColor;
-
 // Note: values are treated as inclusive [min, max] range
 typedef struct DMirRect {
     int32_t min_x;
@@ -197,8 +186,7 @@ typedef struct DMirFrustum {
 
 // addr: address (index) of a node's first child.
 // mask: node's octant mask (zero mask indicates a leaf).
-// data: node's voxel data (if using DMIR_USE_SPLAT_COLOR,
-// first 3 bytes of data are expected to contain RGB color).
+// data: node's voxel data.
 // *_stride: offset (in bytes) between each item (this way,
 // addr/mask/data can be stored as separate arrays or as
 // one interleaved array).
@@ -262,7 +250,6 @@ typedef struct DMirVoxelRef {
 typedef struct DMirFramebuffer {
     DMirDepth* depth;
     DMirVoxelRef* voxel;
-    DMirColor* color;
     uint32_t size_x;
     uint32_t size_y;
     uint32_t row_shift;
@@ -363,10 +350,9 @@ int dmir_pixel_index(DMirFramebuffer* framebuffer, int x, int y) {
 //      3.3. for each renderer of this batch:
 //           * dmir_renderer_draw(...)
 //   4. dmir_batcher_affine_get(...)
-//   5. Copy the framebuffer's colors to your texture
-//      or canvas (if using DMIR_USE_SPLAT_COLOR), or
-//      read the color data from the octrees (based on
-//      the affine_id and voxel address of each pixel).
+//   5. Read the color data from the octrees (based on
+//      the affine_id and voxel address of each pixel)
+//      and write it to your texture or canvas.
 // * Cleanup: free framebuffer(s), batcher(s), renderer(s)
 
 // Some additional remarks regarding dmir_batcher_add:

@@ -235,7 +235,6 @@ typedef uint32_t Stencil;
 
 typedef DMirBool Bool;
 typedef DMirDepth Depth;
-typedef DMirColor Color;
 typedef DMirRect Rect;
 typedef DMirFrustum Frustum;
 
@@ -872,14 +871,8 @@ void calculate_screen_bounds(ProjectedVertex* grid, Bounds* bounds, float* max_s
 static inline void write_pixel(FramebufferInternal* framebuffer, SInt i,
     int32_t affine_id, uint32_t address, Octree* octree)
 {
-    #ifdef DMIR_USE_SPLAT_COLOR
-    uint8_t* data_ptr = PTR_INDEX(octree->data, address);
-    Color* color_ptr = (Color*)data_ptr;
-    framebuffer->api.color[i] = *color_ptr;
-    #else
     framebuffer->api.voxel[i].affine_id = affine_id;
     framebuffer->api.voxel[i].address = address;
-    #endif
 }
 
 static inline void add_fragment(Fragment** fragments, SInt x, SInt y, Depth depth, uint32_t address) {
@@ -1767,7 +1760,6 @@ Framebuffer* dmir_framebuffer_make(uint32_t size_x, uint32_t size_y) {
     if (framebuffer) {
         framebuffer->api.depth = NULL;
         framebuffer->api.voxel = NULL;
-        framebuffer->api.color = NULL;
         
         framebuffer->stencil_tiles = NULL;
         framebuffer->stencil_x_base = NULL;
@@ -1784,7 +1776,6 @@ Framebuffer* dmir_framebuffer_make(uint32_t size_x, uint32_t size_y) {
 void framebuffer_free_channels(FramebufferInternal* framebuffer) {
     if (framebuffer->api.depth) free(framebuffer->api.depth);
     if (framebuffer->api.voxel) free(framebuffer->api.voxel);
-    if (framebuffer->api.color) free(framebuffer->api.color);
     if (framebuffer->stencil_tiles) free(framebuffer->stencil_tiles);
     if (framebuffer->stencil_x_base) free(framebuffer->stencil_x_base);
     if (framebuffer->stencil_y_base) free(framebuffer->stencil_y_base);
@@ -1826,7 +1817,6 @@ void dmir_framebuffer_resize(Framebuffer* framebuffer_ptr, uint32_t size_x, uint
     buffer_size = MAX(buffer_size, 1); // safeguard if width or height is 0
     framebuffer->api.depth = malloc(buffer_size * sizeof(Depth));
     framebuffer->api.voxel = malloc(buffer_size * sizeof(VoxelRef));
-    framebuffer->api.color = malloc(buffer_size * sizeof(Color));
     
     #if STENCIL_BITS > 0
     framebuffer->api.stencil_size_x = STENCIL_SIZE_X;
@@ -1861,17 +1851,14 @@ void dmir_framebuffer_resize(Framebuffer* framebuffer_ptr, uint32_t size_x, uint
 void dmir_framebuffer_clear(Framebuffer* framebuffer_ptr) {
     FramebufferInternal* framebuffer = (FramebufferInternal*)framebuffer_ptr;
     
-    Color color = {.r = 0, .g = 0, .b = 0};
     VoxelRef voxel = {.affine_id = -1, .address = 0};
     
     for (SInt y = 0; y < framebuffer->api.size_y; y++) {
         Depth* depth_row = framebuffer->api.depth + PIXEL_INDEX(framebuffer, 0, y);
         VoxelRef* voxel_row = framebuffer->api.voxel + PIXEL_INDEX(framebuffer, 0, y);
-        Color* color_row = framebuffer->api.color + PIXEL_INDEX(framebuffer, 0, y);
         for (SInt x = 0; x < framebuffer->api.size_x; x++) {
             depth_row[x] = DMIR_MAX_DEPTH;
             voxel_row[x] = voxel;
-            color_row[x] = color;
         }
     }
     
