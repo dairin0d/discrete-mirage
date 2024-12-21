@@ -77,11 +77,6 @@ const char DMIR_VERSION[] = "1.2.0";
 // #define DMIR_STENCIL_1D
 // #define DMIR_STENCIL_2D
 
-// Whether to do accurate stencil checks (using a node's
-// exact clip rect) or simply check if a tile is non-full
-#define DMIR_STENCIL_EXACT
-// #define DMIR_STENCIL_COARSE
-
 // Whether to clear the self-occlusion stencil buffer
 // after rendering each subtree
 #define DMIR_CLEAR_SELF_STENCIL

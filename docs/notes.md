@@ -114,6 +114,7 @@ To simplify further development, some options were removed:
 * Color splatting (now the library is fully agnostic of the data stored in voxels)
 * Alternative ("children-on-stack") octree traversal
 * Support for splatting in cage-subdivision mode
+* Coarse stencil checks (now they are always exact)
 
 Changes introduced in this version:
 * Switched from compiler's default (u)int to (u)int_fast32_t when no specific int size is defined

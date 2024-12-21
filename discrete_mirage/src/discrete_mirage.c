@@ -534,11 +534,9 @@ static inline SInt is_occluded_quad(FramebufferInternal* framebuffer, Rect* rect
             (tile_col + (tile_row << framebuffer->stencil_row_shift));
         for (SInt tx = min_tx; tx <= max_tx; tx += STENCIL_SIZE_X, tile++) {
             Stencil pixel_mask = tile->self;
-            #ifdef DMIR_STENCIL_EXACT
             pixel_mask &=
                 (stencil_x[rect->min_x - tx] ^ stencil_x[rect->max_x - tx + 1]) &
                 (stencil_y[rect->min_y - ty] ^ stencil_y[rect->max_y - ty + 1]);
-            #endif
             if (depth >= tile->depth) pixel_mask &= tile->scene;
             if (pixel_mask != 0) return FALSE;
         }
