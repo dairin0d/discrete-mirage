@@ -56,15 +56,6 @@ const char DMIR_VERSION[] = "1.2.0";
 
 // ===================================================== //
 
-// These options relate to orthographic-mode rendering
-
-// Whether to render using orthographic approximation
-// or cage subdivision (note that they are mutually
-// exclusive in this library and are never used together)
-#define DMIR_USE_ORTHO
-
-// ===================================================== //
-
 // These options deal with occlusion-related things
 
 // Whether to use occlusion (just to check how much

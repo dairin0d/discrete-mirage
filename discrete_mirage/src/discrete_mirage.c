@@ -2475,32 +2475,6 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
                 mask = 255;
             }
             
-            #ifndef DMIR_USE_ORTHO
-            #ifdef DMIR_USE_SPLAT_PIXEL
-            // Splat if size is 1 pixel
-            if (is_pixel) {
-                CHECK_AND_WRITE_STENCIL(framebuffer, rect.min_x, rect.min_y, continue);
-                SPLAT(framebuffer, fragments, rect.min_x, rect.min_y, depth,
-                    affine_id, address, octree, continue);
-                continue;
-            }
-            #else
-            is_splat |= is_pixel;
-            #endif
-            
-            // Splat if this is a leaf node or reached max displayed level
-            if (is_splat) {
-                for (SInt y = rect.min_y; y <= rect.max_y; y++) {
-                    for (SInt x = rect.min_x; x <= rect.max_x; x++) {
-                        CHECK_AND_WRITE_STENCIL(framebuffer, x, y, continue);
-                        SPLAT(framebuffer, fragments, x, y, depth,
-                            affine_id, address, octree, continue);
-                    }
-                }
-                continue;
-            }
-            #endif
-            
             // Do an occlusion check
             if (is_occluded_quad(framebuffer, &rect, depth)) continue;
         }
@@ -2509,7 +2483,6 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
         // This is also required for calculating matrix axes and starting octant
         calculate_midpoints(stack->grid, batcher);
         
-        #ifdef DMIR_USE_ORTHO
         SInt is_subtree = is_pixel | is_splat;
         float projection_distortion = 0;
         // Don't calculate distortion if it's already a pixel or a leaf
@@ -2537,7 +2510,6 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
                 stack->grid, (OrthoStackItem*)(stack+1));
             continue;
         }
-        #endif
         
         // Calculate the starting octant
         SInt starting_octant;
