@@ -73,7 +73,7 @@ Without further ado, here they are:
 - **Octree storage sparsity:** doesn't seem to matter much in C (interleaved-data, separate-data and compact/packed octrees all performed about the same). In C#, the packed version was slightly faster.
 - **Pixel blitting vs 2x2 map:** 2x2 pixel-blitting is about the same as 2x2 map in C. In C#, 2x2 map was a clear winner.
 - **Stencil size:** in C, various stencil sizes (ushort, uint, ulong) and dimensions (1D, 2D) all seem to perform comparably to each other. In C#, the 64-bit (8x8) stencil version was performing the best.
-- **Accessing the color data:** writing color immediately, writing color as a post-process, and not using color - all seem to have the same performance in C. On the other hand, accessing the color data was taking a noticeable chunk of frame time (though currently I can't rule out that it might be a peculiarity of Godot's version of Mono).
+- **Accessing the color data:** writing color immediately, writing color as a post-process, and not using color - all seem to have the same performance in C. On the other hand, accessing the color data in C# was taking a noticeable chunk of frame time (though currently I can't rule out that it might be a peculiarity of Godot's version of Mono).
 - **Deferred vs immediate writing:** in C, there appears to be no difference between splatting pixels immediately or postponing it until after the octree traversal. In C#, deferred writing was showing a better performance.
 
 **Int vs float:** using ints/fixed-point is a bit faster than floats, though not by much on a modern CPU. However, with int representation it's easier to implement algorithms involving positive/negative exponents of two.
