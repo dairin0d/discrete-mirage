@@ -23,9 +23,9 @@
 */
 
 /* 
-* Local Modifications:
-* - Added explicit cast for LoadImageA return value to match HICON type.
-* - This change was made on 2024-12-19 by dairin0d to resolve compilation issues on Windows 10 with MinGW.
+* Local Modifications by dairin0d:
+* - 2024-12-21: Fixed scroll lag on Linux by moving the scroll direction
+    calculation after win->event.button = E.xbutton.button;
 */
 
 /*
@@ -2867,7 +2867,10 @@ Start of Linux / Unix defines
 			case ButtonPress:
 			case ButtonRelease:
 				win->event.type = RGFW_mouseButtonPressed + (E.type == ButtonRelease); // the events match 
-				
+
+				win->event.button = E.xbutton.button;
+				RGFW_mouseButtons[win->event.button].prev = RGFW_mouseButtons[win->event.button].current;
+
 				switch(win->event.button) {
 					case RGFW_mouseScrollUp:
 						win->event.scroll = 1;
@@ -2877,9 +2880,6 @@ Start of Linux / Unix defines
 						break;
 					default: break;
 				}
-
-				win->event.button = E.xbutton.button;
-				RGFW_mouseButtons[win->event.button].prev = RGFW_mouseButtons[win->event.button].current;
 
 				if (win->event.repeat == RGFW_FALSE)
 					win->event.repeat = RGFW_isPressed(win, win->event.keyCode);
@@ -5389,8 +5389,6 @@ RGFW_UNUSED(win); /*!< if buffer rendering is not being used */
 		Class.hCursor = LoadCursor(NULL, IDC_ARROW);
 		Class.lpfnWndProc = WndProc;
 
-		// 2024-12-19 local fix: explicit cast added to LoadImageA return value to match HICON type.
-   		// This change was made due to compilation issues on Windows 10 with MinGW.
 		Class.hIcon = (HICON)LoadImageA(GetModuleHandleW(NULL), "RGFW_ICON", IMAGE_ICON, 0, 0, LR_DEFAULTSIZE | LR_SHARED);		
 		if (Class.hIcon == NULL) {
             Class.hIcon = (HICON)LoadImageA(NULL, IDI_APPLICATION, IMAGE_ICON, 0, 0, LR_DEFAULTSIZE | LR_SHARED);
