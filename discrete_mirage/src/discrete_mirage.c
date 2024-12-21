@@ -190,10 +190,6 @@ typedef uint32_t Stencil;
     (tile)->update &= ~STENCIL_UPDATE_DEPTH;\
 }
 
-#if defined(DMIR_ORTHO_TRAVERSE_ALT) && defined(DMIR_DEPTH_INT32) && defined(DMIR_COORD_FIXED)
-#define ORTHO_TRAVERSE_ALT
-#endif
-
 #if defined(DMIR_MAP_PRECISION) && defined(DMIR_COORD_FIXED)
 #if defined(DMIR_USE_MAP_2) || defined(DMIR_USE_MAP_3) || defined(DMIR_USE_MAP_4)
 #define USE_MAP
@@ -1639,117 +1635,6 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
     } while (stack > stack_start);
 }
 
-#ifdef ORTHO_TRAVERSE_ALT
-// Uses "children-on-stack" octree traversal
-void render_ortho_alt(RendererInternal* renderer, BatcherInternal* batcher,
-    FramebufferInternal* framebuffer, Fragment** fragments,
-    uint32_t affine_id, Octree* octree, uint32_t subroot, Effects effects, SInt is_cube,
-    ProjectedVertex* grid, OrthoStackItemAlt* stack_start)
-{
-    Vector3S matrix[4];
-    SInt octant_order, starting_octant;
-    SInt max_level = calculate_ortho_matrix(batcher, grid, matrix, &octant_order, &starting_octant);
-    if (max_level < 0) return;
-    
-    effects.max_level = (effects.max_level < 0 ? max_level : MIN(effects.max_level, max_level));
-    
-    // In the cube case, we need to calculate extents/deltas to the pixel level
-    SInt max_stack_level = (effects.shape != DMIR_SHAPE_CUBE) ? effects.max_level : max_level;
-    
-    Vector3S extent;
-    calculate_ortho_extent(matrix, &extent, &effects);
-    
-    Coord dilation = calculate_ortho_dilation(&effects, &extent);
-    
-    Vector3S deltas[CAGE_SIZE * ORTHO_MAX_SUBDIVISIONS];
-    calculate_ortho_deltas(deltas, matrix, 1);
-    
-    for (SInt level = 1; level <= max_stack_level; level++) {
-        Vector3S* deltasP = deltas + ((level-1) * CAGE_SIZE);
-        Vector3S* deltasN = deltas + (level * CAGE_SIZE);
-        for (SInt octant = 0; octant < 8; octant++) {
-            deltasN[octant].x = COORD_HALVE(deltasP[octant].x);
-            deltasN[octant].y = COORD_HALVE(deltasP[octant].y);
-            deltasN[octant].z = DEPTH_HALVE(deltasP[octant].z);
-        }
-    }
-    
-    OrthoStackItemAlt* stack = stack_start;
-    
-    stack->rect = renderer->api.rect;
-    stack->position = matrix[3];
-    stack->address = subroot;
-    stack->level = 0;
-    stack->is_cube = is_cube;
-    
-    Queue* queues = (octree->is_packed ? batcher->lookups->packed : batcher->lookups->sparse);
-    Queue* queues_forward = queues + (((octant_order << 3) | (starting_octant ^ 0b000)) << 8);
-    Queue* queues_reverse = queues + (((octant_order << 3) | (starting_octant ^ 0b111)) << 8);
-    
-    uint32_t* indices = batcher->lookups->indices;
-    
-    MapInfo map;
-    if (max_stack_level > 0) {
-        calculate_maps(&map, queues_forward, deltas, extent, dilation, max_level);
-    }
-    
-    Depth min_depth = z_to_depth(batcher, batcher->frustum_bounds.min_z);
-    Depth max_depth = z_to_depth(batcher, batcher->frustum_bounds.max_z);
-    
-    while (stack >= stack_start) {
-        // We need a copy anyway for subnode processing
-        OrthoStackItemAlt current = *stack;
-        stack--;
-        
-        Vector3S current_extent;
-        current_extent.x = (extent.x >> current.level) + dilation;
-        current_extent.y = (extent.y >> current.level) + dilation;
-        current_extent.z = extent.z >> current.level;
-        
-        Rect rect;
-        uint8_t mask;
-        uint32_t child_start;
-        is_cube = current.is_cube;
-        SInt done = render_ortho_cull_draw(
-            framebuffer,
-            fragments,
-            octree,
-            min_depth, max_depth,
-            &current.position, &current_extent,
-            &rect, &current.rect,
-            affine_id, current.address,
-            current.level, &effects, dilation,
-            &mask, &child_start, &is_cube,
-            queues_forward, (deltas + (current.level * CAGE_SIZE)),
-            &map, indices);
-        if (done) continue;
-        
-        // Push non-empty children on the stack
-        Queue queue = queues_reverse[mask];
-        for (; queue.indices != 0; queue.indices >>= 4, queue.octants >>= 4) {
-            SInt octant = (queue.octants & 7);
-            
-            uint32_t address;
-            if (!is_cube) {
-                address = child_start + (queue.indices & 7);
-                VALIDATE_ADDRESS(address, octree, continue);
-            } else {
-                address = current.address;
-            }
-            
-            stack++;
-            stack->is_cube = is_cube;
-            stack->rect = rect;
-            stack->position.x = current.position.x + (deltas[octant].x >> current.level);
-            stack->position.y = current.position.y + (deltas[octant].y >> current.level);
-            stack->position.z = current.position.z + (deltas[octant].z >> current.level);
-            stack->address = address;
-            stack->level = current.level + 1;
-        }
-    }
-}
-#endif
-
 ///////////////////////////////////////////
 // Public API and some related functions //
 ///////////////////////////////////////////
@@ -2647,15 +2532,9 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
             sub_effects.dilation_abs += projection_distortion * 0.5f;
             sub_effects.dilation_rel *= (1 << stack->level);
             
-            #ifdef ORTHO_TRAVERSE_ALT
-            render_ortho_alt(renderer, batcher, framebuffer, fragments,
-                affine_id, octree, address, sub_effects, is_cube,
-                stack->grid, (OrthoStackItemAlt*)(stack+1));
-            #else
             render_ortho(renderer, batcher, framebuffer, fragments,
                 affine_id, octree, address, sub_effects, is_cube,
                 stack->grid, (OrthoStackItem*)(stack+1));
-            #endif
             continue;
         }
         #endif
