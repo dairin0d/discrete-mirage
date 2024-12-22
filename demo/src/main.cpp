@@ -93,7 +93,7 @@ struct ProgramState {
     struct vec3 cam_scl;
     int cam_zoom;
     int cam_zoom_fov;
-    bool is_cam_orbiting;
+    int cam_orbiting_state;
     bool is_depth_mode;
     
     DMirRect viewport;
@@ -719,7 +719,7 @@ void process_event(ProgramState* state) {
         }
     } else if (event->type == RGFW_mouseButtonPressed) {
         if (event->button == RGFW_mouseLeft) {
-            state->is_cam_orbiting = true;
+            state->cam_orbiting_state = 1;
             state->last_mouse_x = event->point.x;
             state->last_mouse_y = event->point.y;
             RGFW_window_mouseHold(state->window, RGFW_AREA(state->window->r.w, state->window->r.h));
@@ -730,7 +730,7 @@ void process_event(ProgramState* state) {
         }
     } else if (event->type == RGFW_mouseButtonReleased) {
         if (event->button == RGFW_mouseLeft) {
-            state->is_cam_orbiting = false;
+            state->cam_orbiting_state = 0;
             RGFW_window_showMouse(state->window, RGFW_TRUE);
             RGFW_window_mouseUnhold(state->window);
             int restored_x = state->window->r.x + state->last_mouse_x;
@@ -738,11 +738,16 @@ void process_event(ProgramState* state) {
             RGFW_window_moveMouse(state->window, RGFW_POINT(restored_x, restored_y));
         }
     } else if (event->type == RGFW_mousePosChanged) {
-        if (state->is_cam_orbiting) {
+        if (state->cam_orbiting_state > 1) {
             // In "mouse hold" mode, point contains delta rather than absolute position
             state->cam_rot.y += event->point.x * 0.005f;
             state->cam_rot.x += event->point.y * 0.005f;
             cam_updated = true;
+        } else if (state->cam_orbiting_state > 0) {
+            // On Linux, RGFW produces a non-zero motion right after the "mouse hold" mode
+            // is enabled, most likely due to the previous mouse position being out-of-date.
+            // I don't know if this is an unintended behavior, so here's a workaround for now. 
+            state->cam_orbiting_state++;
         }
     }
     
