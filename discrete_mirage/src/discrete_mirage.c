@@ -314,14 +314,6 @@ typedef struct OrthoStackItem {
     SInt is_cube;
 } OrthoStackItem;
 
-typedef struct OrthoStackItemAlt {
-    Rect rect;
-    Vector3S position;
-    uint32_t address;
-    SInt level;
-    SInt is_cube;
-} OrthoStackItemAlt;
-
 typedef struct Fragment {
     int32_t x;
     int32_t y;
