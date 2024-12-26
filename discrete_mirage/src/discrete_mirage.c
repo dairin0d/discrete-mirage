@@ -1476,6 +1476,14 @@ static SInt render_ortho_cull_draw(
     }
     
     if (size_max < map->size64) {
+        SInt use_suboctants = (size_max >= map->size36) & (level != (effects->max_level-1));
+        
+        if (use_suboctants) {
+            STAT_INCREMENT(framebuffer, DMIR_SPLATS_4PX);
+        } else {
+            STAT_INCREMENT(framebuffer, DMIR_SPLATS_3PX);
+        }
+        
         Coord min_mx = PIXEL_TO_COORD(rect->min_x) - (position->x - (map->half >> level));
         Coord min_my = PIXEL_TO_COORD(rect->min_y) - (position->y - (map->half >> level));
         SInt map_shift = map->shift - level;
@@ -1492,14 +1500,6 @@ static SInt render_ortho_cull_draw(
             }
         } else {
             mask64 = UINT64_MAX;
-        }
-        
-        SInt use_suboctants = (size_max >= map->size36) & (level != (effects->max_level-1));
-        
-        if (use_suboctants) {
-            STAT_INCREMENT(framebuffer, DMIR_SPLATS_4PX);
-        } else {
-            STAT_INCREMENT(framebuffer, DMIR_SPLATS_3PX);
         }
         
         Coord mx, my;
@@ -1723,6 +1723,14 @@ static SInt draw_map_local(LocalVariables* v) {
     }
     
     if (v->size_max < v->map->size64) {
+        SInt use_suboctants = (v->size_max >= v->map->size36) & (v->level != (v->max_level-1));
+        
+        if (use_suboctants) {
+            STAT_INCREMENT(v->framebuffer, DMIR_SPLATS_4PX);
+        } else {
+            STAT_INCREMENT(v->framebuffer, DMIR_SPLATS_3PX);
+        }
+        
         MAX_UPDATE(v->min_x, v->clip_rect.min_x);
         MAX_UPDATE(v->min_y, v->clip_rect.min_y);
         MIN_UPDATE(v->max_x, v->clip_rect.max_x);
@@ -1744,14 +1752,6 @@ static SInt draw_map_local(LocalVariables* v) {
             }
         } else {
             mask64 = UINT64_MAX;
-        }
-        
-        SInt use_suboctants = (v->size_max >= v->map->size36) & (v->level != (v->max_level-1));
-        
-        if (use_suboctants) {
-            STAT_INCREMENT(v->framebuffer, DMIR_SPLATS_4PX);
-        } else {
-            STAT_INCREMENT(v->framebuffer, DMIR_SPLATS_3PX);
         }
         
         Coord mx, my;
@@ -2000,8 +2000,10 @@ static void render_ortho_local_stencil(FramebufferInternal* framebuffer, Fragmen
         for (; v.min_y <= v.max_y; v.min_y++) {
             if (local_stencil[v.min_y] & v.row_mask) goto not_occluded;
         }
+        STAT_INCREMENT(framebuffer, DMIR_OCCLUSIONS_FAILED);
         continue;
         not_occluded:;
+        STAT_INCREMENT(framebuffer, DMIR_OCCLUSIONS_PASSED);
         
         v.is_cube = stack->is_cube;
         
