@@ -156,6 +156,10 @@ typedef uint32_t Stencil;
 #define STENCIL_LUT_MASK_Y 0
 #endif
 
+#if defined(DMIR_STENCIL_LOCAL) && (STENCIL_BITS > 0)
+#define STENCIL_LOCAL_SIZE STENCIL_BITS
+#endif
+
 #define STENCIL_SIZE_X (1 << STENCIL_SHIFT_X)
 #define STENCIL_SIZE_Y (1 << STENCIL_SHIFT_Y)
 #define STENCIL_MASK_X (STENCIL_SIZE_X - 1)
@@ -1204,6 +1208,53 @@ void calculate_maps(MapInfo* map, Queue* queues_forward,
     #endif
 }
 
+typedef struct CircleParams {
+    Coord radius;
+    Coord radius2;
+    Coord start_dx;
+    Coord start_dy;
+    Coord step_add;
+    Coord step_add_2;
+    Coord distance_2_y;
+} CircleParams;
+
+static inline void calc_circle_params(CircleParams* c,
+    Vector3S* position, Vector3S* extent, SInt min_x, SInt min_y)
+{
+    c->radius = extent->x; // circle extent is the same for x and y
+    
+    #ifdef DMIR_COORD_FIXED
+    const int MAGNITUDE_LIMIT = 23170; // (2 * 23170)^2 < 2^31
+    SInt circle_shift = SUBPIXEL_BITS;
+    while ((c->radius > MAGNITUDE_LIMIT) | ((1 << circle_shift) > MAGNITUDE_LIMIT)) {
+        circle_shift--;
+        c->radius >>= 1;
+    }
+    #endif
+    
+    c->radius2 = c->radius * c->radius;
+    
+    #ifdef DMIR_COORD_FIXED
+    c->start_dx = (PIXEL_TO_COORD(min_x) - position->x) >> (SUBPIXEL_BITS - circle_shift);
+    c->start_dy = (PIXEL_TO_COORD(min_y) - position->y) >> (SUBPIXEL_BITS - circle_shift);
+    c->step_add = 1 << circle_shift;
+    SInt step_shift = circle_shift + 1;
+    c->step_add_2 = c->step_add * c->step_add;
+    c->distance_2_y = c->start_dx * c->start_dx + c->start_dy * c->start_dy;
+    c->start_dx <<= step_shift;
+    c->start_dy <<= step_shift;
+    c->step_add <<= step_shift;
+    #else
+    c->start_dx = PIXEL_TO_COORD(min_x) - position->x;
+    c->start_dy = PIXEL_TO_COORD(min_y) - position->y;
+    c->step_add = 2;
+    c->step_add_2 = 1;
+    c->distance_2_y = c->start_dx * c->start_dx + c->start_dy * c->start_dy;
+    c->start_dx *= 2;
+    c->start_dy *= 2;
+    #endif
+}
+
 static inline void draw_circle(
     FramebufferInternal* framebuffer,
     Fragment** fragments,
@@ -1212,46 +1263,16 @@ static inline void draw_circle(
     Vector3S* position, Vector3S* extent,
     Rect* rect)
 {
-    Coord radius = extent->x; // circle extent is the same for x and y
-    
-    #ifdef DMIR_COORD_FIXED
-    const int MAGNITUDE_LIMIT = 23170; // (2 * 23170)^2 < 2^31
-    SInt circle_shift = SUBPIXEL_BITS;
-    while ((radius > MAGNITUDE_LIMIT) | ((1 << circle_shift) > MAGNITUDE_LIMIT)) {
-        circle_shift--;
-        radius >>= 1;
-    }
-    #endif
-    
-    Coord radius2 = radius * radius;
-    
-    #ifdef DMIR_COORD_FIXED
-    Coord start_dx = (PIXEL_TO_COORD(rect->min_x) - position->x) >> (SUBPIXEL_BITS - circle_shift);
-    Coord start_dy = (PIXEL_TO_COORD(rect->min_y) - position->y) >> (SUBPIXEL_BITS - circle_shift);
-    Coord step_add = 1 << circle_shift;
-    SInt step_shift = circle_shift + 1;
-    Coord step_add_2 = step_add * step_add;
-    Coord distance_2_y = start_dx * start_dx + start_dy * start_dy;
-    start_dx <<= step_shift;
-    start_dy <<= step_shift;
-    step_add <<= step_shift;
-    #else
-    Coord start_dx = PIXEL_TO_COORD(rect->min_x) - position->x;
-    Coord start_dy = PIXEL_TO_COORD(rect->min_y) - position->y;
-    Coord step_add = 2;
-    Coord step_add_2 = 1;
-    Coord distance_2_y = start_dx * start_dx + start_dy * start_dy;
-    start_dx *= 2;
-    start_dy *= 2;
-    #endif
+    CircleParams c;
+    calc_circle_params(&c, position, extent, rect->min_x, rect->min_y);
     
     for (SInt y = rect->min_y; y <= rect->max_y; y++) {
-        Coord distance_2 = distance_2_y, row_dx = start_dx;
+        Coord distance_2 = c.distance_2_y, row_dx = c.start_dx;
         
         for (SInt x = rect->min_x; x <= rect->max_x; x++) {
-            SInt is_inside = (distance_2 <= radius2);
-            distance_2 += row_dx + step_add_2;
-            row_dx += step_add;
+            SInt is_inside = (distance_2 <= c.radius2);
+            distance_2 += row_dx + c.step_add_2;
+            row_dx += c.step_add;
             
             if (!is_inside) continue;
             
@@ -1260,18 +1281,18 @@ static inline void draw_circle(
                 affine_id, address, octree, continue);
         }
         
-        distance_2_y += start_dy + step_add_2;
-        start_dy += step_add;
+        c.distance_2_y += c.start_dy + c.step_add_2;
+        c.start_dy += c.step_add;
     }
 }
 
-static inline SInt render_ortho_cull_draw(
+static SInt render_ortho_cull_draw(
     FramebufferInternal* framebuffer,
     Fragment** fragments,
     Octree* octree,
     Depth min_depth, Depth max_depth,
     Vector3S* position, Vector3S* extent,
-    Rect* rect, Rect* clip_rect,
+    Rect* src_rect, Rect* rect, Rect* clip_rect,
     uint32_t affine_id, uint32_t address,
     SInt level, Effects* effects, Coord dilation,
     uint8_t* mask, uint32_t* child_start, SInt* is_cube,
@@ -1287,6 +1308,7 @@ static inline SInt render_ortho_cull_draw(
     rect->max_x = COORD_TO_PIXEL(position->x + extent->x);
     rect->min_y = COORD_TO_PIXEL(position->y - extent->y);
     rect->max_y = COORD_TO_PIXEL(position->y + extent->y);
+    *src_rect = *rect;
     
     // Calculate node size (in pixels)
     SInt size_x = rect->max_x - rect->min_x;
@@ -1527,6 +1549,521 @@ static inline SInt render_ortho_cull_draw(
     return FALSE;
 }
 
+#ifdef STENCIL_LOCAL_SIZE
+typedef struct LocalSplat {
+    uint32_t address;
+    Depth z;
+    uint8_t min_x;
+    uint8_t min_y;
+    uint8_t max_x;
+    uint8_t max_y;
+} LocalSplat;
+
+typedef struct LocalVariables {
+    FramebufferInternal* framebuffer;
+    Fragment** fragments;
+    Octree* octree;
+    Queue* queues;
+    Queue* queues_forward;
+    MapInfo* map;
+    uint32_t* octants;
+    uint32_t* indices;
+    Stencil* local_stencil;
+    Vector3S* deltas;
+    uint32_t affine_id;
+    int32_t max_level;
+    int32_t shape;
+    Coord dilation;
+    Rect clip_rect;
+    SInt offset_x;
+    SInt offset_y;
+    Vector3S position;
+    uint32_t child_start;
+    uint32_t address;
+    int32_t level;
+    SInt min_x;
+    SInt min_y;
+    SInt max_x;
+    SInt max_y;
+    SInt size_max;
+    Stencil row_mask;
+    Vector3S extent;
+    uint8_t mask;
+    uint8_t is_cube;
+} LocalVariables;
+
+static void draw_circle_local(LocalVariables* v) {
+    CircleParams c;
+    calc_circle_params(&c, &v->position, &v->extent, v->min_x, v->min_y);
+    
+    for (SInt y = v->min_y; y <= v->max_y; y++) {
+        Coord distance_2 = c.distance_2_y, row_dx = c.start_dx;
+        
+        for (SInt x = v->min_x; x <= v->max_x; x++) {
+            SInt is_inside = (distance_2 <= c.radius2);
+            distance_2 += row_dx + c.step_add_2;
+            row_dx += c.step_add;
+            
+            if (!is_inside) continue;
+            
+            Stencil stencil_mask = ((Stencil)1) << x;
+            if (!(v->local_stencil[y] & stencil_mask)) continue;
+            v->local_stencil[y] &= ~stencil_mask;
+            
+            SInt abs_x = x + v->offset_x;
+            SInt abs_y = y + v->offset_y;
+            CHECK_AND_WRITE_STENCIL(v->framebuffer, abs_x, abs_y, continue);
+            SPLAT(v->framebuffer, v->fragments, abs_x, abs_y, v->position.z,
+                v->affine_id, v->address, v->octree, continue);
+        }
+        
+        c.distance_2_y += c.start_dy + c.step_add_2;
+        c.start_dy += c.step_add;
+    }
+}
+
+static inline void draw_splat_local(LocalVariables* v) {
+    if (v->size_max == 0) {
+        STAT_INCREMENT(v->framebuffer, DMIR_SPLATS_1PX);
+    } else {
+        STAT_INCREMENT(v->framebuffer, DMIR_SPLATS_LEAF);
+        
+        if (v->shape == DMIR_SHAPE_CIRCLE) {
+            MAX_UPDATE(v->min_x, v->clip_rect.min_x);
+            MAX_UPDATE(v->min_y, v->clip_rect.min_y);
+            MIN_UPDATE(v->max_x, v->clip_rect.max_x);
+            MIN_UPDATE(v->max_y, v->clip_rect.max_y);
+            draw_circle_local(v);
+            return;
+        } else {
+            if (v->shape == DMIR_SHAPE_POINT) {
+                Coord dilation = MAX(v->dilation, 0);
+                v->min_x = COORD_TO_PIXEL(v->position.x - dilation);
+                v->max_x = COORD_TO_PIXEL(v->position.x + dilation);
+                v->min_y = COORD_TO_PIXEL(v->position.y - dilation);
+                v->max_y = COORD_TO_PIXEL(v->position.y + dilation);
+                v->row_mask = (STENCIL_CLEAR << v->min_x) ^ ((STENCIL_CLEAR << 1) << v->max_x);
+            }
+        }
+    }
+    
+    MAX_UPDATE(v->min_x, v->clip_rect.min_x);
+    MAX_UPDATE(v->min_y, v->clip_rect.min_y);
+    MIN_UPDATE(v->max_x, v->clip_rect.max_x);
+    MIN_UPDATE(v->max_y, v->clip_rect.max_y);
+    
+    for (SInt y = v->min_y; y <= v->max_y; y++) {
+        for (SInt x = v->min_x; x <= v->max_x; x++) {
+            SInt abs_x = x + v->offset_x;
+            SInt abs_y = y + v->offset_y;
+            CHECK_AND_WRITE_STENCIL(v->framebuffer, abs_x, abs_y, continue);
+            SPLAT(v->framebuffer, v->fragments, abs_x, abs_y, v->position.z,
+                v->affine_id, v->address, v->octree, continue);
+        }
+    }
+    
+    for (; v->min_y <= v->max_y; v->min_y++) {
+        v->local_stencil[v->min_y] &= ~v->row_mask;
+    }
+}
+
+#ifdef USE_MAP
+static SInt draw_map_local(LocalVariables* v) {
+    if (v->size_max < v->map->size8) {
+        STAT_INCREMENT(v->framebuffer, DMIR_SPLATS_2PX);
+        
+        MAX_UPDATE(v->min_x, v->clip_rect.min_x);
+        MAX_UPDATE(v->min_y, v->clip_rect.min_y);
+        MIN_UPDATE(v->max_x, v->clip_rect.max_x);
+        MIN_UPDATE(v->max_y, v->clip_rect.max_y);
+        
+        Coord min_mx = PIXEL_TO_COORD(v->min_x) - (v->position.x - (v->map->half >> v->level));
+        Coord min_my = PIXEL_TO_COORD(v->min_y) - (v->position.y - (v->map->half >> v->level));
+        SInt map_shift = v->map->shift - v->level;
+        
+        uint8_t indices_mask = (v->octree->is_packed ? 0 : 255);
+        uint32_t o2i = v->indices[v->mask | indices_mask];
+        
+        Coord mx, my;
+        SInt x, y;
+        for (my = min_my, y = v->min_y; y <= v->max_y; y++, my += SUBPIXEL_SIZE) {
+            uint8_t mask_y = v->map->y8[my >> map_shift] & v->mask;
+            for (mx = min_mx, x = v->min_x; x <= v->max_x; x++, mx += SUBPIXEL_SIZE) {
+                uint8_t mask_xy = v->map->x8[mx >> map_shift] & mask_y;
+                
+                if (mask_xy == 0) continue;
+                
+                Stencil stencil_mask = ((Stencil)1) << x;
+                if (!(v->local_stencil[y] & stencil_mask)) continue;
+                v->local_stencil[y] &= ~stencil_mask;
+                
+                SInt abs_x = x + v->offset_x;
+                SInt abs_y = y + v->offset_y;
+                CHECK_AND_WRITE_STENCIL(v->framebuffer, abs_x, abs_y, continue);
+                
+                uint32_t octant = v->queues_forward[mask_xy].octants & 7;
+                Depth z = v->position.z + v->deltas[octant].z;
+                
+                if (!v->is_cube) {
+                    uint32_t index = (o2i >> (octant*4)) & 7;
+                    v->address = v->child_start + index;
+                    VALIDATE_ADDRESS(v->address, v->octree, continue);
+                }
+                
+                SPLAT(v->framebuffer, v->fragments, abs_x, abs_y, z,
+                    v->affine_id, v->address, v->octree, continue);
+            }
+        }
+        
+        return TRUE;
+    }
+    
+    if (v->size_max < v->map->size64) {
+        MAX_UPDATE(v->min_x, v->clip_rect.min_x);
+        MAX_UPDATE(v->min_y, v->clip_rect.min_y);
+        MIN_UPDATE(v->max_x, v->clip_rect.max_x);
+        MIN_UPDATE(v->max_y, v->clip_rect.max_y);
+        
+        Coord min_mx = PIXEL_TO_COORD(v->min_x) - (v->position.x - (v->map->half >> v->level));
+        Coord min_my = PIXEL_TO_COORD(v->min_y) - (v->position.y - (v->map->half >> v->level));
+        SInt map_shift = v->map->shift - v->level;
+        
+        uint8_t indices_mask = (v->octree->is_packed ? 0 : 255);
+        uint32_t o2i = v->indices[v->mask | indices_mask];
+        
+        uint64_t mask64 = 0;
+        if (!v->is_cube) {
+            Queue queue = v->queues_forward[v->mask];
+            for (; queue.indices != 0; queue.indices >>= 4, queue.octants >>= 4) {
+                uint64_t mask8 = *PTR_INDEX(v->octree->mask, (v->child_start + (queue.indices & 7)));
+                mask64 |= (mask8 ? mask8 : 255) << ((queue.octants & 7) * 8);
+            }
+        } else {
+            mask64 = UINT64_MAX;
+        }
+        
+        SInt use_suboctants = (v->size_max >= v->map->size36) & (v->level != (v->max_level-1));
+        
+        if (use_suboctants) {
+            STAT_INCREMENT(v->framebuffer, DMIR_SPLATS_4PX);
+        } else {
+            STAT_INCREMENT(v->framebuffer, DMIR_SPLATS_3PX);
+        }
+        
+        Coord mx, my;
+        SInt x, y;
+        for (my = min_my, y = v->min_y; y <= v->max_y; y++, my += SUBPIXEL_SIZE) {
+            uint64_t mask_y = v->map->y64[my >> map_shift] & mask64;
+            for (mx = min_mx, x = v->min_x; x <= v->max_x; x++, mx += SUBPIXEL_SIZE) {
+                uint64_t mask_xy = v->map->x64[mx >> map_shift] & mask_y;
+                
+                if (mask_xy == 0) continue;
+                
+                Stencil stencil_mask = ((Stencil)1) << x;
+                if (!(v->local_stencil[y] & stencil_mask)) continue;
+                v->local_stencil[y] &= ~stencil_mask;
+                
+                SInt abs_x = x + v->offset_x;
+                SInt abs_y = y + v->offset_y;
+                CHECK_AND_WRITE_STENCIL(v->framebuffer, abs_x, abs_y, continue);
+                
+                SInt bit2 = ((mask_xy & v->map->mask_bit2) == 0) & 1;
+                mask_xy &= v->map->mask_bit2 ^ (-(int64_t)bit2);
+                SInt bit1 = ((mask_xy & v->map->mask_bit1) == 0) & 1;
+                mask_xy &= v->map->mask_bit1 ^ (-(int64_t)bit1);
+                SInt bit0 = ((mask_xy & v->map->mask_bit0) == 0) & 1;
+                SInt queue_item = bit0 | (bit1 << 1) | (bit2 << 2);
+                SInt octant64 = (v->map->full_queue >> (queue_item << 2)) & 7;
+                
+                Depth z = v->position.z + v->deltas[octant64].z;
+                
+                if (!v->is_cube) {
+                    uint32_t index = (o2i >> (octant64*4)) & 7;
+                    v->address = v->child_start + index;
+                    VALIDATE_ADDRESS(v->address, v->octree, continue);
+                    
+                    if (use_suboctants) {
+                        uint8_t sub_mask_full = *PTR_INDEX(v->octree->mask, v->address);
+                        if (sub_mask_full != 0) {
+                            uint8_t sub_mask = sub_mask_full & (mask_xy >> (octant64 * 8));
+                            uint32_t octant = v->queues_forward[sub_mask].octants & 7;
+                            z += DEPTH_HALVE(v->deltas[octant].z);
+                            index = (v->indices[sub_mask_full | indices_mask] >> (octant*4)) & 7;
+                            v->address = *PTR_INDEX(v->octree->addr, v->address) + index;
+                            VALIDATE_ADDRESS(v->address, v->octree, continue);
+                        }
+                    }
+                }
+                
+                SPLAT(v->framebuffer, v->fragments, abs_x, abs_y, z,
+                    v->affine_id, v->address, v->octree, continue);
+            }
+        }
+        
+        return TRUE;
+    }
+    
+    return FALSE;
+}
+#endif
+
+static void initialize_local_stencil(FramebufferInternal* framebuffer,
+    OrthoStackItem* stack, Stencil* local_stencil, Rect* rect, Depth depth)
+{
+    #if STENCIL_SHIFT_Y == 0
+    SInt min_tx = rect->min_x & ~STENCIL_MASK_X;
+    SInt max_tx = rect->max_x & ~STENCIL_MASK_X;
+    SInt tile_col = min_tx >> STENCIL_SHIFT_X;
+    SInt tile_row = rect->min_y;
+    Stencil* stencil_x = framebuffer->stencil_x;
+    
+    SInt local_ymin = stack->rect.min_y - rect->min_y;
+    SInt local_ymax = stack->rect.max_y - rect->min_y;
+    
+    for (SInt y = 0; y < STENCIL_LOCAL_SIZE; y++, tile_row++) {
+        local_stencil[y] = 0;
+        
+        if ((y < local_ymin) | (y > local_ymax)) continue;
+        
+        StencilTile* tile = framebuffer->stencil_tiles +
+            (tile_col + (tile_row << framebuffer->stencil_row_shift));
+        for (SInt tx = min_tx; tx <= max_tx; tx += STENCIL_SIZE_X, tile++) {
+            Stencil pixel_mask = tile->self;
+            pixel_mask &= (stencil_x[rect->min_x - tx] ^ stencil_x[rect->max_x - tx + 1]);
+            if (depth >= tile->depth) pixel_mask &= tile->scene;
+            
+            if (tx < rect->min_x) {
+                local_stencil[y] |= pixel_mask >> (rect->min_x - tx);
+            } else {
+                local_stencil[y] |= pixel_mask << (tx - rect->min_x);
+            }
+        }
+    }
+    #else
+    SInt min_tx = rect->min_x & ~STENCIL_MASK_X;
+    SInt max_tx = rect->max_x & ~STENCIL_MASK_X;
+    SInt min_ty = rect->min_y & ~STENCIL_MASK_Y;
+    SInt max_ty = rect->max_y & ~STENCIL_MASK_Y;
+    SInt tile_col = min_tx >> STENCIL_SHIFT_X;
+    SInt tile_row = min_ty >> STENCIL_SHIFT_Y;
+    Stencil* stencil_x = framebuffer->stencil_x;
+    Stencil* stencil_y = framebuffer->stencil_y;
+    
+    SInt local_ymin = stack->rect.min_y - rect->min_y;
+    SInt local_ymax = stack->rect.max_y - rect->min_y;
+    
+    for (SInt i = 0; i < STENCIL_LOCAL_SIZE; i++) {
+        local_stencil[i] = 0;
+    }
+    
+    for (SInt ty = min_ty; ty <= max_ty; ty += STENCIL_SIZE_Y, tile_row++) {
+        StencilTile* tile = framebuffer->stencil_tiles +
+            (tile_col + (tile_row << framebuffer->stencil_row_shift));
+        
+        SInt tile_ymin = ty - rect->min_y;
+        SInt tile_ymax = tile_ymin + (STENCIL_SIZE_Y - 1);
+        MAX_UPDATE(tile_ymin, local_ymin);
+        MIN_UPDATE(tile_ymax, local_ymax);
+        
+        for (SInt tx = min_tx; tx <= max_tx; tx += STENCIL_SIZE_X, tile++) {
+            Stencil pixel_mask = tile->self;
+            pixel_mask &=
+                (stencil_x[rect->min_x - tx] ^ stencil_x[rect->max_x - tx + 1]) &
+                (stencil_y[rect->min_y - ty] ^ stencil_y[rect->max_y - ty + 1]);
+            if (depth >= tile->depth) pixel_mask &= tile->scene;
+            
+            SInt offset_x = rect->min_x - tx;
+            SInt offset_y = rect->min_y - ty;
+            
+            for (SInt y = tile_ymin; y <= tile_ymax; y++) {
+                Stencil row_mask = pixel_mask >> ((y + offset_y) * STENCIL_SIZE_X);
+                if (offset_x > 0) {
+                    local_stencil[y] |= row_mask >> offset_x;
+                } else {
+                    local_stencil[y] |= row_mask << -offset_x;
+                }
+            }
+        }
+    }
+    #endif
+}
+
+static void render_ortho_local_stencil(FramebufferInternal* framebuffer, Fragment** fragments,
+    uint32_t affine_id, Octree* octree, Effects* effects, Coord dilation,
+    Queue* queues, Queue* queues_forward, Queue* queues_reverse,
+    MapInfo* map, uint32_t* indices, uint32_t* octants,
+    OrthoStackItem* stack_start, uint32_t address,
+    Depth depth, Depth min_depth, Depth max_depth, Rect rect)
+{
+    OrthoStackItem* stack = stack_start;
+    stack_start--;
+    
+    Rect clip_rect = stack->rect;
+    
+    Stencil local_stencil[STENCIL_LOCAL_SIZE];
+    initialize_local_stencil(framebuffer, stack, local_stencil, &rect, depth);
+    
+    SInt offset_x = rect.min_x;
+    SInt offset_y = rect.min_y;
+    stack->center.x -= SUBPIXEL_SIZE * offset_x;
+    stack->center.y -= SUBPIXEL_SIZE * offset_y;
+    stack->rect.min_x -= offset_x;
+    stack->rect.min_y -= offset_y;
+    stack->rect.max_x -= offset_x;
+    stack->rect.max_y -= offset_y;
+    
+    Rect clip_rect_local = {
+        .min_x = clip_rect.min_x - offset_x,
+        .min_y = clip_rect.min_y - offset_y,
+        .max_x = clip_rect.max_x - offset_x,
+        .max_y = clip_rect.max_y - offset_y
+    };
+    
+    LocalVariables v = {
+        .framebuffer = framebuffer,
+        .fragments = fragments,
+        .octree = octree,
+        .queues = queues,
+        .queues_forward = queues_forward,
+        .map = map,
+        .octants = octants,
+        .indices = indices,
+        .local_stencil = local_stencil,
+        .max_level = effects->max_level,
+        .affine_id = affine_id,
+        .shape = effects->shape,
+        .dilation = dilation,
+        .clip_rect = clip_rect_local,
+        .offset_x = offset_x,
+        .offset_y = offset_y,
+        .position = {.x = 0, .y = 0, .z = 0},
+        .address = address,
+        .child_start = 0,
+        .min_x = 0,
+        .min_y = 0,
+        .max_x = 0,
+        .max_y = 0,
+        .size_max = 0,
+        .row_mask = 0,
+        .extent = {.x = 0, .y = 0, .z = 0},
+        .mask = 0,
+        .level = 0,
+        .deltas = stack->deltas,
+        .is_cube = stack->is_cube
+    };
+    
+    do {
+        {
+            // Pop an entry from the stack
+            if (stack->count == 0) {
+                stack--;
+                continue;
+            }
+            
+            stack->count--;
+            v.address = stack->addresses[stack->count];
+            
+            SInt octant = stack->octants[stack->count];
+            v.position.x = stack->center.x + stack->deltas[octant].x;
+            v.position.y = stack->center.y + stack->deltas[octant].y;
+            v.position.z = stack->center.z + stack->deltas[octant].z;
+        }
+        
+        grid_initialized:;
+        
+        STAT_INCREMENT(framebuffer, DMIR_NODES_ORTHO);
+        
+        v.min_x = COORD_TO_PIXEL(v.position.x - stack->extent.x);
+        v.max_x = COORD_TO_PIXEL(v.position.x + stack->extent.x);
+        
+        // if (v.min_x > v.max_x) continue;
+        
+        v.min_y = COORD_TO_PIXEL(v.position.y - stack->extent.y);
+        v.max_y = COORD_TO_PIXEL(v.position.y + stack->extent.y);
+        
+        SInt size_x = v.max_x - v.min_x;
+        SInt size_y = v.max_y - v.min_y;
+        v.size_max = MAX(size_x, size_y);
+        
+        // Empirically, this seems to offer no performance benefit
+        // #ifdef DMIR_SKIP_OCCLUDED_ROWS
+        // MAX_UPDATE(v.min_y, stack->rect.min_y);
+        // #endif
+        
+        v.row_mask = (STENCIL_CLEAR << v.min_x) ^ ((STENCIL_CLEAR << 1) << v.max_x);
+        // if (v.row_mask == 0) continue;
+        
+        for (; v.min_y <= v.max_y; v.min_y++) {
+            if (local_stencil[v.min_y] & v.row_mask) goto not_occluded;
+        }
+        continue;
+        not_occluded:;
+        
+        v.is_cube = stack->is_cube;
+        
+        SInt is_splat = (v.size_max == 0);
+        
+        v.mask = 0;
+        
+        if (v.is_cube) {
+            v.mask = 255;
+        } else {
+            is_splat |= (stack->level == v.max_level);
+            
+            // Non-voxel data at max level might not actually be stored
+            if (!is_splat) {
+                v.mask = *PTR_INDEX(octree->mask, v.address);
+                is_splat = !v.mask;
+            }
+            
+            if (is_splat & (effects->shape == DMIR_SHAPE_CUBE)) {
+                v.mask = 255;
+                v.is_cube = TRUE;
+                is_splat = FALSE;
+            }
+        }
+        
+        if (is_splat) {
+            v.extent = stack->extent;
+            draw_splat_local(&v);
+            continue;
+        }
+        
+        v.child_start = *PTR_INDEX(octree->addr, v.address);
+        
+        #ifdef USE_MAP
+        if (v.size_max < 4) {
+            v.deltas = stack->deltas;
+            v.level = stack->level;
+            if (draw_map_local(&v)) continue;
+        }
+        #endif
+        
+        // Push non-empty children on the stack
+        stack++;
+        stack->count = 0;
+        stack->center = v.position;
+        stack->is_cube = v.is_cube;
+        
+        // Empirically, this seems to offer no performance benefit
+        // #ifdef DMIR_SKIP_OCCLUDED_ROWS
+        // stack->rect.min_y = v.min_y;
+        // #endif
+        
+        Queue queue = queues_reverse[v.mask];
+        for (; queue.indices != 0; queue.indices >>= 4, queue.octants >>= 4) {
+            if (!v.is_cube) {
+                v.address = v.child_start + (queue.indices & 7);
+                VALIDATE_ADDRESS(v.address, octree, continue);
+            }
+            stack->octants[stack->count] = (queue.octants & 7);
+            stack->addresses[stack->count] = v.address;
+            stack->count++;
+        }
+    } while (stack > stack_start);
+}
+#endif
+
 // Uses "parent-on-stack" octree traversal
 void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
     FramebufferInternal* framebuffer, Fragment** fragments,
@@ -1616,6 +2153,7 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
         
         STAT_INCREMENT(framebuffer, DMIR_NODES_ORTHO);
         
+        Rect local_rect;
         Rect rect;
         uint8_t mask;
         uint32_t child_start;
@@ -1626,7 +2164,7 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
             octree,
             min_depth, max_depth,
             &position, &stack->extent,
-            &rect, &stack->rect,
+            &local_rect, &rect, &stack->rect,
             affine_id, address,
             stack->level, &effects, dilation,
             &mask, &child_start, &is_cube,
@@ -1651,6 +2189,27 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
             stack->addresses[stack->count] = address;
             stack->count++;
         }
+        
+        #ifdef STENCIL_LOCAL_SIZE
+        local_rect.min_x--;
+        local_rect.min_y--;
+        local_rect.max_x++;
+        local_rect.max_y++;
+        SInt safe_size_x = local_rect.max_x - local_rect.min_x;
+        SInt safe_size_y = local_rect.max_y - local_rect.min_y;
+        SInt safe_size = MAX(safe_size_x, safe_size_y);
+        
+        if (safe_size < STENCIL_LOCAL_SIZE) {
+            Depth depth = position.z - stack->extent.z;
+            render_ortho_local_stencil(framebuffer, fragments,
+                affine_id, octree, &effects, dilation,
+                queues, queues_forward, queues_reverse,
+                &map, indices, batcher->lookups->octants,
+                stack, address,
+                depth, min_depth, max_depth, local_rect);
+            stack--;
+        }
+        #endif
     } while (stack > stack_start);
 }
 

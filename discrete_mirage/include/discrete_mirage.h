@@ -74,8 +74,11 @@ const char DMIR_VERSION[] = "1.2.0";
 
 // Whether a stencil tile should be treated
 // as a 1D row of bits or a 2D bitmap
-// #define DMIR_STENCIL_1D
+#define DMIR_STENCIL_1D
 // #define DMIR_STENCIL_2D
+
+// Whether to use a "local" stencil buffer
+#define DMIR_STENCIL_LOCAL
 
 // Whether to clear the self-occlusion stencil buffer
 // after rendering each subtree

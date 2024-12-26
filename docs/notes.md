@@ -119,3 +119,11 @@ To simplify further development, some options were removed:
 Changes introduced in this version:
 * Switched from compiler's default (u)int to (u)int_fast32_t when no specific int size is defined
 * Added some diagnostic stats (basically, how many nodes of various types were processed)
+* Implemented a variant of "local stencil buffer" trick mentioned in PND3D notes:
+  * If a stencil tile uses N bits, the "local buffer" is N rows of N bits (N-bit integers)
+  * When node size (in pixels) is less than N, rendering switches to "local" mode:
+    * Corresponding parts of the "main" stencil buffer get copied to the "local" one
+    * "Local" stencil buffer is rather small (cache coherency is more likely)
+    * In the "local" case, occlusion test is much simpler, and we can skip the boundary checks
+  * With 1D stencil tiles, using "local" mode is a bit faster than otherwise (~15% in my measurements), but 2D stencil tiles apparently add enough overhead to actually make "local" mode slower
+  * In practice, "local" stencil buffer primarily speeds up the occlusion test, but the majority of rendering time is still dominated by processing small nodes that did not get occluded
