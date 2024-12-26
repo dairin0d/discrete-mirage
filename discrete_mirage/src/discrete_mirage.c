@@ -874,6 +874,7 @@ void calculate_screen_bounds(ProjectedVertex* grid, Bounds* bounds, float* max_s
 static inline void write_pixel(FramebufferInternal* framebuffer, SInt i,
     int32_t affine_id, uint32_t address, Octree* octree)
 {
+    STAT_INCREMENT(framebuffer, DMIR_FRAGMENTS_WRITTEN);
     framebuffer->api.voxel[i].affine_id = affine_id;
     framebuffer->api.voxel[i].address = address;
 }
@@ -906,16 +907,19 @@ static inline void add_fragment(Fragment** fragments, SInt x, SInt y, Depth dept
 #ifdef DMIR_USE_SPLAT_DEFERRED
 #if STENCIL_BITS > 0
 #define SPLAT(framebuffer, fragments, x, y, depth, affine_id, address, octree, stop) {\
+    STAT_INCREMENT(framebuffer, DMIR_FRAGMENTS_ADDED);\
     add_fragment(fragments, x, y, depth, address);\
 }
 #else
 #define SPLAT(framebuffer, fragments, x, y, depth, affine_id, address, octree, stop) {\
+    STAT_INCREMENT(framebuffer, DMIR_FRAGMENTS_ADDED);\
     CHECK_AND_WRITE_DEPTH(framebuffer, x, y, depth, stop);\
     add_fragment(fragments, x, y, depth, address);\
 }
 #endif
 #else
 #define SPLAT(framebuffer, fragments, x, y, depth, affine_id, address, octree, stop) {\
+    STAT_INCREMENT(framebuffer, DMIR_FRAGMENTS_ADDED);\
     CHECK_AND_WRITE_DEPTH(framebuffer, x, y, depth, stop);\
     {\
         SInt i = PIXEL_INDEX(framebuffer, x, y);\

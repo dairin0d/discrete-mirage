@@ -639,6 +639,8 @@ void print_stats(ProgramState* state) {
         << stats[DMIR_SPLATS_2PX] << " 2px; "
         << stats[DMIR_SPLATS_3PX] << " 3px; "
         << stats[DMIR_SPLATS_4PX] << " 4px; "
+        << stats[DMIR_FRAGMENTS_ADDED] << " fragments; "
+        << stats[DMIR_FRAGMENTS_WRITTEN] << " writes; "
         << std::endl;
 }
 
