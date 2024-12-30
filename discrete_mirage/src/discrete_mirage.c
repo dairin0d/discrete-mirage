@@ -599,6 +599,12 @@ static inline void enlarge_bounds(Bounds* bounds) {
     (rect).min_y = (int32_t)CLAMP((bounds).min_y - (dilation), (INT32_MIN >> 2), (INT32_MAX >> 2));\
     (rect).max_y = (int32_t)CLAMP((bounds).max_y + (dilation), (INT32_MIN >> 2), (INT32_MAX >> 2));\
 }
+#define RECT_FROM_POINT(rect, position, extent_x, extent_y) {\
+    (rect).min_x = COORD_TO_PIXEL((position).x - (extent_x));\
+    (rect).max_x = COORD_TO_PIXEL((position).x + (extent_x));\
+    (rect).min_y = COORD_TO_PIXEL((position).y - (extent_y));\
+    (rect).max_y = COORD_TO_PIXEL((position).y + (extent_y));\
+}
 
 static inline void project(ProjectedVertex* vertex, BatcherInternal* batcher) {
     float clamped_z = MAX(vertex->position.z, batcher->clamp_z);
@@ -872,7 +878,7 @@ void calculate_screen_bounds(ProjectedVertex* grid, Bounds* bounds, float* max_s
 )
 
 static inline void write_pixel(FramebufferInternal* framebuffer, SInt i,
-    int32_t affine_id, uint32_t address, Octree* octree)
+    int32_t affine_id, uint32_t address)
 {
     STAT_INCREMENT(framebuffer, DMIR_FRAGMENTS_WRITTEN);
     framebuffer->api.voxel[i].affine_id = affine_id;
@@ -906,24 +912,24 @@ static inline void add_fragment(Fragment** fragments, SInt x, SInt y, Depth dept
 
 #ifdef DMIR_USE_SPLAT_DEFERRED
 #if STENCIL_BITS > 0
-#define SPLAT(framebuffer, fragments, x, y, depth, affine_id, address, octree, stop) {\
+#define SPLAT(framebuffer, fragments, x, y, depth, affine_id, address, stop) {\
     STAT_INCREMENT(framebuffer, DMIR_FRAGMENTS_ADDED);\
     add_fragment(fragments, x, y, depth, address);\
 }
 #else
-#define SPLAT(framebuffer, fragments, x, y, depth, affine_id, address, octree, stop) {\
+#define SPLAT(framebuffer, fragments, x, y, depth, affine_id, address, stop) {\
     STAT_INCREMENT(framebuffer, DMIR_FRAGMENTS_ADDED);\
     CHECK_AND_WRITE_DEPTH(framebuffer, x, y, depth, stop);\
     add_fragment(fragments, x, y, depth, address);\
 }
 #endif
 #else
-#define SPLAT(framebuffer, fragments, x, y, depth, affine_id, address, octree, stop) {\
+#define SPLAT(framebuffer, fragments, x, y, depth, affine_id, address, stop) {\
     STAT_INCREMENT(framebuffer, DMIR_FRAGMENTS_ADDED);\
     CHECK_AND_WRITE_DEPTH(framebuffer, x, y, depth, stop);\
     {\
         SInt i = PIXEL_INDEX(framebuffer, x, y);\
-        write_pixel(framebuffer, i, affine_id, address, octree);\
+        write_pixel(framebuffer, i, affine_id, address);\
     }\
 }
 #endif
@@ -1262,7 +1268,6 @@ static inline void calc_circle_params(CircleParams* c,
 static inline void draw_circle(
     FramebufferInternal* framebuffer,
     Fragment** fragments,
-    Octree* octree,
     uint32_t affine_id, uint32_t address,
     Vector3S* position, Vector3S* extent,
     Rect* rect)
@@ -1282,7 +1287,7 @@ static inline void draw_circle(
             
             CHECK_AND_WRITE_STENCIL(framebuffer, x, y, continue);
             SPLAT(framebuffer, fragments, x, y, position->z,
-                affine_id, address, octree, continue);
+                affine_id, address, continue);
         }
         
         c.distance_2_y += c.start_dy + c.step_add_2;
@@ -1308,10 +1313,7 @@ static SInt render_ortho_cull_draw(
     if (depth >= max_depth) return TRUE;
     
     // Calculate screen-space bounds (in pixels)
-    rect->min_x = COORD_TO_PIXEL(position->x - extent->x);
-    rect->max_x = COORD_TO_PIXEL(position->x + extent->x);
-    rect->min_y = COORD_TO_PIXEL(position->y - extent->y);
-    rect->max_y = COORD_TO_PIXEL(position->y + extent->y);
+    RECT_FROM_POINT(*rect, *position, extent->x, extent->y);
     *src_rect = *rect;
     
     // Calculate node size (in pixels)
@@ -1320,11 +1322,7 @@ static SInt render_ortho_cull_draw(
     SInt size_max = MAX(size_x, size_y);
     
     // Clamp to viewport
-    // RECT_CLIP(rect, clip_rect);
-    MAX_UPDATE(rect->min_x, clip_rect->min_x);
-    MAX_UPDATE(rect->min_y, clip_rect->min_y);
-    MIN_UPDATE(rect->max_x, clip_rect->max_x);
-    MIN_UPDATE(rect->max_y, clip_rect->max_y);
+    RECT_CLIP(*rect, *clip_rect);
     
     // Skip if not visible
     if ((rect->min_x > rect->max_x) | (rect->min_y > rect->max_y)) return TRUE;
@@ -1338,7 +1336,7 @@ static SInt render_ortho_cull_draw(
         
         CHECK_AND_WRITE_STENCIL(framebuffer, rect->min_x, rect->min_y, return TRUE);
         SPLAT(framebuffer, fragments, rect->min_x, rect->min_y, position->z,
-            affine_id, address, octree, return TRUE);
+            affine_id, address, return TRUE);
         
         return TRUE;
     }
@@ -1371,25 +1369,19 @@ static SInt render_ortho_cull_draw(
         STAT_INCREMENT(framebuffer, DMIR_SPLATS_LEAF);
         
         if (effects->shape == DMIR_SHAPE_CIRCLE) {
-            draw_circle(framebuffer, fragments, octree, affine_id, address, position, extent, rect);
+            draw_circle(framebuffer, fragments, affine_id, address, position, extent, rect);
         } else {
             if (effects->shape == DMIR_SHAPE_POINT) {
                 MAX_UPDATE(dilation, 0);
-                rect->min_x = COORD_TO_PIXEL(position->x - dilation);
-                rect->max_x = COORD_TO_PIXEL(position->x + dilation);
-                rect->min_y = COORD_TO_PIXEL(position->y - dilation);
-                rect->max_y = COORD_TO_PIXEL(position->y + dilation);
-                MAX_UPDATE(rect->min_x, clip_rect->min_x);
-                MAX_UPDATE(rect->min_y, clip_rect->min_y);
-                MIN_UPDATE(rect->max_x, clip_rect->max_x);
-                MIN_UPDATE(rect->max_y, clip_rect->max_y);
+                RECT_FROM_POINT(*rect, *position, dilation, dilation);
+                RECT_CLIP(*rect, *clip_rect);
             }
             
             for (SInt y = rect->min_y; y <= rect->max_y; y++) {
                 for (SInt x = rect->min_x; x <= rect->max_x; x++) {
                     CHECK_AND_WRITE_STENCIL(framebuffer, x, y, continue);
                     SPLAT(framebuffer, fragments, x, y, position->z,
-                        affine_id, address, octree, continue);
+                        affine_id, address, continue);
                 }
             }
         }
@@ -1429,7 +1421,7 @@ static SInt render_ortho_cull_draw(
             
             CHECK_AND_WRITE_STENCIL(framebuffer, x, y, continue);
             SPLAT(framebuffer, fragments, x, y, z,
-                affine_id, address, octree, continue);
+                affine_id, address, continue);
         }
         
         return TRUE;
@@ -1468,7 +1460,7 @@ static SInt render_ortho_cull_draw(
                 }
                 
                 SPLAT(framebuffer, fragments, x, y, z,
-                    affine_id, address, octree, continue);
+                    affine_id, address, continue);
             }
         }
         
@@ -1542,7 +1534,7 @@ static SInt render_ortho_cull_draw(
                 }
                 
                 SPLAT(framebuffer, fragments, x, y, z,
-                    affine_id, address, octree, continue);
+                    affine_id, address, continue);
             }
         }
         
@@ -1554,15 +1546,6 @@ static SInt render_ortho_cull_draw(
 }
 
 #ifdef STENCIL_LOCAL_SIZE
-typedef struct LocalSplat {
-    uint32_t address;
-    Depth z;
-    uint8_t min_x;
-    uint8_t min_y;
-    uint8_t max_x;
-    uint8_t max_y;
-} LocalSplat;
-
 typedef struct LocalVariables {
     FramebufferInternal* framebuffer;
     Fragment** fragments;
@@ -1585,10 +1568,7 @@ typedef struct LocalVariables {
     uint32_t child_start;
     uint32_t address;
     int32_t level;
-    SInt min_x;
-    SInt min_y;
-    SInt max_x;
-    SInt max_y;
+    Rect rect;
     SInt size_max;
     Stencil row_mask;
     Vector3S extent;
@@ -1598,12 +1578,12 @@ typedef struct LocalVariables {
 
 static void draw_circle_local(LocalVariables* v) {
     CircleParams c;
-    calc_circle_params(&c, &v->position, &v->extent, v->min_x, v->min_y);
+    calc_circle_params(&c, &v->position, &v->extent, v->rect.min_x, v->rect.min_y);
     
-    for (SInt y = v->min_y; y <= v->max_y; y++) {
+    for (SInt y = v->rect.min_y; y <= v->rect.max_y; y++) {
         Coord distance_2 = c.distance_2_y, row_dx = c.start_dx;
         
-        for (SInt x = v->min_x; x <= v->max_x; x++) {
+        for (SInt x = v->rect.min_x; x <= v->rect.max_x; x++) {
             SInt is_inside = (distance_2 <= c.radius2);
             distance_2 += row_dx + c.step_add_2;
             row_dx += c.step_add;
@@ -1618,7 +1598,7 @@ static void draw_circle_local(LocalVariables* v) {
             SInt abs_y = y + v->offset_y;
             CHECK_AND_WRITE_STENCIL(v->framebuffer, abs_x, abs_y, continue);
             SPLAT(v->framebuffer, v->fragments, abs_x, abs_y, v->position.z,
-                v->affine_id, v->address, v->octree, continue);
+                v->affine_id, v->address, continue);
         }
         
         c.distance_2_y += c.start_dy + c.step_add_2;
@@ -1633,41 +1613,32 @@ static inline void draw_splat_local(LocalVariables* v) {
         STAT_INCREMENT(v->framebuffer, DMIR_SPLATS_LEAF);
         
         if (v->shape == DMIR_SHAPE_CIRCLE) {
-            MAX_UPDATE(v->min_x, v->clip_rect.min_x);
-            MAX_UPDATE(v->min_y, v->clip_rect.min_y);
-            MIN_UPDATE(v->max_x, v->clip_rect.max_x);
-            MIN_UPDATE(v->max_y, v->clip_rect.max_y);
+            RECT_CLIP(v->rect, v->clip_rect);
             draw_circle_local(v);
             return;
         } else {
             if (v->shape == DMIR_SHAPE_POINT) {
                 Coord dilation = MAX(v->dilation, 0);
-                v->min_x = COORD_TO_PIXEL(v->position.x - dilation);
-                v->max_x = COORD_TO_PIXEL(v->position.x + dilation);
-                v->min_y = COORD_TO_PIXEL(v->position.y - dilation);
-                v->max_y = COORD_TO_PIXEL(v->position.y + dilation);
-                v->row_mask = (STENCIL_CLEAR << v->min_x) ^ ((STENCIL_CLEAR << 1) << v->max_x);
+                RECT_FROM_POINT(v->rect, v->position, dilation, dilation);
+                v->row_mask = (STENCIL_CLEAR << v->rect.min_x) ^ ((STENCIL_CLEAR << 1) << v->rect.max_x);
             }
         }
     }
     
-    MAX_UPDATE(v->min_x, v->clip_rect.min_x);
-    MAX_UPDATE(v->min_y, v->clip_rect.min_y);
-    MIN_UPDATE(v->max_x, v->clip_rect.max_x);
-    MIN_UPDATE(v->max_y, v->clip_rect.max_y);
+    RECT_CLIP(v->rect, v->clip_rect);
     
-    for (SInt y = v->min_y; y <= v->max_y; y++) {
-        for (SInt x = v->min_x; x <= v->max_x; x++) {
+    for (SInt y = v->rect.min_y; y <= v->rect.max_y; y++) {
+        for (SInt x = v->rect.min_x; x <= v->rect.max_x; x++) {
             SInt abs_x = x + v->offset_x;
             SInt abs_y = y + v->offset_y;
             CHECK_AND_WRITE_STENCIL(v->framebuffer, abs_x, abs_y, continue);
             SPLAT(v->framebuffer, v->fragments, abs_x, abs_y, v->position.z,
-                v->affine_id, v->address, v->octree, continue);
+                v->affine_id, v->address, continue);
         }
     }
     
-    for (; v->min_y <= v->max_y; v->min_y++) {
-        v->local_stencil[v->min_y] &= ~v->row_mask;
+    for (; v->rect.min_y <= v->rect.max_y; v->rect.min_y++) {
+        v->local_stencil[v->rect.min_y] &= ~v->row_mask;
     }
 }
 
@@ -1676,13 +1647,10 @@ static SInt draw_map_local(LocalVariables* v) {
     if (v->size_max < v->map->size8) {
         STAT_INCREMENT(v->framebuffer, DMIR_SPLATS_2PX);
         
-        MAX_UPDATE(v->min_x, v->clip_rect.min_x);
-        MAX_UPDATE(v->min_y, v->clip_rect.min_y);
-        MIN_UPDATE(v->max_x, v->clip_rect.max_x);
-        MIN_UPDATE(v->max_y, v->clip_rect.max_y);
+        RECT_CLIP(v->rect, v->clip_rect);
         
-        Coord min_mx = PIXEL_TO_COORD(v->min_x) - (v->position.x - (v->map->half >> v->level));
-        Coord min_my = PIXEL_TO_COORD(v->min_y) - (v->position.y - (v->map->half >> v->level));
+        Coord min_mx = PIXEL_TO_COORD(v->rect.min_x) - (v->position.x - (v->map->half >> v->level));
+        Coord min_my = PIXEL_TO_COORD(v->rect.min_y) - (v->position.y - (v->map->half >> v->level));
         SInt map_shift = v->map->shift - v->level;
         
         uint8_t indices_mask = (v->octree->is_packed ? 0 : 255);
@@ -1690,9 +1658,9 @@ static SInt draw_map_local(LocalVariables* v) {
         
         Coord mx, my;
         SInt x, y;
-        for (my = min_my, y = v->min_y; y <= v->max_y; y++, my += SUBPIXEL_SIZE) {
+        for (my = min_my, y = v->rect.min_y; y <= v->rect.max_y; y++, my += SUBPIXEL_SIZE) {
             uint8_t mask_y = v->map->y8[my >> map_shift] & v->mask;
-            for (mx = min_mx, x = v->min_x; x <= v->max_x; x++, mx += SUBPIXEL_SIZE) {
+            for (mx = min_mx, x = v->rect.min_x; x <= v->rect.max_x; x++, mx += SUBPIXEL_SIZE) {
                 uint8_t mask_xy = v->map->x8[mx >> map_shift] & mask_y;
                 
                 if (mask_xy == 0) continue;
@@ -1715,7 +1683,7 @@ static SInt draw_map_local(LocalVariables* v) {
                 }
                 
                 SPLAT(v->framebuffer, v->fragments, abs_x, abs_y, z,
-                    v->affine_id, v->address, v->octree, continue);
+                    v->affine_id, v->address, continue);
             }
         }
         
@@ -1731,13 +1699,10 @@ static SInt draw_map_local(LocalVariables* v) {
             STAT_INCREMENT(v->framebuffer, DMIR_SPLATS_3PX);
         }
         
-        MAX_UPDATE(v->min_x, v->clip_rect.min_x);
-        MAX_UPDATE(v->min_y, v->clip_rect.min_y);
-        MIN_UPDATE(v->max_x, v->clip_rect.max_x);
-        MIN_UPDATE(v->max_y, v->clip_rect.max_y);
+        RECT_CLIP(v->rect, v->clip_rect);
         
-        Coord min_mx = PIXEL_TO_COORD(v->min_x) - (v->position.x - (v->map->half >> v->level));
-        Coord min_my = PIXEL_TO_COORD(v->min_y) - (v->position.y - (v->map->half >> v->level));
+        Coord min_mx = PIXEL_TO_COORD(v->rect.min_x) - (v->position.x - (v->map->half >> v->level));
+        Coord min_my = PIXEL_TO_COORD(v->rect.min_y) - (v->position.y - (v->map->half >> v->level));
         SInt map_shift = v->map->shift - v->level;
         
         uint8_t indices_mask = (v->octree->is_packed ? 0 : 255);
@@ -1756,9 +1721,9 @@ static SInt draw_map_local(LocalVariables* v) {
         
         Coord mx, my;
         SInt x, y;
-        for (my = min_my, y = v->min_y; y <= v->max_y; y++, my += SUBPIXEL_SIZE) {
+        for (my = min_my, y = v->rect.min_y; y <= v->rect.max_y; y++, my += SUBPIXEL_SIZE) {
             uint64_t mask_y = v->map->y64[my >> map_shift] & mask64;
-            for (mx = min_mx, x = v->min_x; x <= v->max_x; x++, mx += SUBPIXEL_SIZE) {
+            for (mx = min_mx, x = v->rect.min_x; x <= v->rect.max_x; x++, mx += SUBPIXEL_SIZE) {
                 uint64_t mask_xy = v->map->x64[mx >> map_shift] & mask_y;
                 
                 if (mask_xy == 0) continue;
@@ -1800,7 +1765,7 @@ static SInt draw_map_local(LocalVariables* v) {
                 }
                 
                 SPLAT(v->framebuffer, v->fragments, abs_x, abs_y, z,
-                    v->affine_id, v->address, v->octree, continue);
+                    v->affine_id, v->address, continue);
             }
         }
         
@@ -1943,10 +1908,7 @@ static void render_ortho_local_stencil(FramebufferInternal* framebuffer, Fragmen
         .position = {.x = 0, .y = 0, .z = 0},
         .address = address,
         .child_start = 0,
-        .min_x = 0,
-        .min_y = 0,
-        .max_x = 0,
-        .max_y = 0,
+        .rect = {},
         .size_max = 0,
         .row_mask = 0,
         .extent = {.x = 0, .y = 0, .z = 0},
@@ -1977,28 +1939,24 @@ static void render_ortho_local_stencil(FramebufferInternal* framebuffer, Fragmen
         
         STAT_INCREMENT(framebuffer, DMIR_NODES_ORTHO);
         
-        v.min_x = COORD_TO_PIXEL(v.position.x - stack->extent.x);
-        v.max_x = COORD_TO_PIXEL(v.position.x + stack->extent.x);
+        RECT_FROM_POINT(v.rect, v.position, stack->extent.x, stack->extent.y);
         
-        // if (v.min_x > v.max_x) continue;
+        // if (v.rect.min_x > v.rect.max_x) continue;
         
-        v.min_y = COORD_TO_PIXEL(v.position.y - stack->extent.y);
-        v.max_y = COORD_TO_PIXEL(v.position.y + stack->extent.y);
-        
-        SInt size_x = v.max_x - v.min_x;
-        SInt size_y = v.max_y - v.min_y;
+        SInt size_x = v.rect.max_x - v.rect.min_x;
+        SInt size_y = v.rect.max_y - v.rect.min_y;
         v.size_max = MAX(size_x, size_y);
         
         // Empirically, this seems to offer no performance benefit
         // #ifdef DMIR_SKIP_OCCLUDED_ROWS
-        // MAX_UPDATE(v.min_y, stack->rect.min_y);
+        // MAX_UPDATE(v.rect.min_y, stack->rect.min_y);
         // #endif
         
-        v.row_mask = (STENCIL_CLEAR << v.min_x) ^ ((STENCIL_CLEAR << 1) << v.max_x);
+        v.row_mask = (STENCIL_CLEAR << v.rect.min_x) ^ ((STENCIL_CLEAR << 1) << v.rect.max_x);
         // if (v.row_mask == 0) continue;
         
-        for (; v.min_y <= v.max_y; v.min_y++) {
-            if (local_stencil[v.min_y] & v.row_mask) goto not_occluded;
+        for (; v.rect.min_y <= v.rect.max_y; v.rect.min_y++) {
+            if (local_stencil[v.rect.min_y] & v.row_mask) goto not_occluded;
         }
         STAT_INCREMENT(framebuffer, DMIR_OCCLUSIONS_FAILED);
         continue;
@@ -2835,7 +2793,7 @@ static inline void tile_depth_update(FramebufferInternal* framebuffer,
 }
 
 void write_fragments(RendererInternal* renderer, FramebufferInternal* framebuffer,
-    Fragment** fragments, uint32_t affine_id, Octree* octree)
+    Fragment** fragments, uint32_t affine_id)
 {
     SInt tile_head = -1;
     SInt tile_tail = -1;
@@ -2884,7 +2842,7 @@ void write_fragments(RendererInternal* renderer, FramebufferInternal* framebuffe
         
         {
             SInt i = PIXEL_INDEX(framebuffer, fragment->x, fragment->y);
-            write_pixel(framebuffer, i, affine_id, fragment->address, octree);
+            write_pixel(framebuffer, i, affine_id, fragment->address);
         }
     }
     
@@ -3145,7 +3103,7 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
     } while (stack > stack_start);
     
     #ifdef DMIR_USE_SPLAT_DEFERRED
-    write_fragments(renderer, framebuffer, fragments, affine_id, octree);
+    write_fragments(renderer, framebuffer, fragments, affine_id);
     #elif (STENCIL_BITS > 0) && defined(DMIR_CLEAR_SELF_STENCIL)
     clear_self_stencil(framebuffer, &subtree->rect);
     #endif

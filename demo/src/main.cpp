@@ -205,6 +205,8 @@ DMirOctree* load_octree(std::string path, int mode) {
                     }
                 }
             }
+            
+            octree->count = count;
         } else {
             for (int i = 0; i < octree->count; i++) {
                 addr[i] = *PTR_INDEX(octree->addr, i);
