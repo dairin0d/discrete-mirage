@@ -76,6 +76,7 @@ struct ProgramState {
     
     std::vector<RGBA32> render_buffer;
     
+    DMirLookups* dmir_lookups;
     DMirFramebuffer* dmir_framebuffer;
     DMirBatcher* dmir_batcher;
     std::vector<DMirRenderer*> dmir_renderers;
@@ -857,8 +858,11 @@ int main(int argc, char* argv[]) {
         .perspective = 0,
     };
     
+    state.dmir_lookups = dmir_lookups_make();
+    
     state.dmir_framebuffer = dmir_framebuffer_make(state.screen_width, state.screen_height);
-    state.dmir_batcher = dmir_batcher_make();
+    
+    state.dmir_batcher = dmir_batcher_make(state.dmir_lookups);
     
     for (int i = 0; i < 16; i++) {
         auto dmir_renderer = dmir_renderer_make();
@@ -963,7 +967,10 @@ int main(int argc, char* argv[]) {
     }
     
     dmir_batcher_free(state.dmir_batcher);
+    
     dmir_framebuffer_free(state.dmir_framebuffer);
+    
+    dmir_lookups_free(state.dmir_lookups);
     
     RGFW_window_close(state.window);
     

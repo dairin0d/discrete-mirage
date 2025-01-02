@@ -351,26 +351,16 @@ UInt pow2_ceil(UInt value) {
 // Lookup tables //
 ///////////////////
 
-#define XYZ 0
-#define XZY 1
-#define YXZ 2
-#define YZX 3
-#define ZXY 4
-#define ZYX 5
+#define XYZ DMIR_XYZ
+#define XZY DMIR_XZY
+#define YXZ DMIR_YXZ
+#define YZX DMIR_YZX
+#define ZXY DMIR_ZXY
+#define ZYX DMIR_ZYX
 
-typedef struct Queue {
-    uint32_t octants;
-    uint32_t indices;
-} Queue;
+typedef DMirQueue Queue;
 
-typedef struct Lookups {
-    uint8_t* counts; // mask -> bit count
-    uint32_t* octants; // mask, index -> octant
-    uint32_t* indices; // mask, octant -> index
-    Queue* sparse; // order, mask -> octants & indices
-    Queue* packed; // order, mask -> octants & indices
-    uint8_t* flips; // flip, mask -> flipped mask
-} Lookups;
+typedef DMirLookups Lookups;
 
 void lookups_make_octants_indices_counts(Lookups* lookups) {
     lookups->counts = malloc(256 * sizeof(uint8_t));
@@ -2198,6 +2188,14 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
 // Public API and some related functions //
 ///////////////////////////////////////////
 
+Lookups* dmir_lookups_make() {
+    return lookups_make();
+}
+
+void dmir_lookups_free(Lookups* lookups) {
+    lookups_free(lookups);
+}
+
 Framebuffer* dmir_framebuffer_make(uint32_t size_x, uint32_t size_y) {
     FramebufferInternal* framebuffer = malloc(sizeof(FramebufferInternal));
     
@@ -2329,11 +2327,11 @@ Bool dmir_is_occluded_quad(Framebuffer* framebuffer_ptr, Rect rect, Depth depth)
     return (Bool)is_occluded_quad(framebuffer, &rect, depth);
 }
 
-Batcher* dmir_batcher_make() {
+Batcher* dmir_batcher_make(Lookups* lookups) {
     BatcherInternal* batcher = malloc(sizeof(BatcherInternal));
     
     if (batcher) {
-        batcher->lookups = lookups_make();
+        batcher->lookups = lookups;
         
         batcher->affine_size = 1024;
         batcher->affine = malloc(batcher->affine_size * sizeof(AffineInfo));
@@ -2355,8 +2353,6 @@ Batcher* dmir_batcher_make() {
 
 void dmir_batcher_free(Batcher* batcher_ptr) {
     BatcherInternal* batcher = (BatcherInternal*)batcher_ptr;
-    
-    if (batcher->lookups) lookups_free(batcher->lookups);
     
     if (batcher->affine) free(batcher->affine);
     
