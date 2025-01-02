@@ -369,6 +369,7 @@ typedef struct Lookups {
     uint32_t* indices; // mask, octant -> index
     Queue* sparse; // order, mask -> octants & indices
     Queue* packed; // order, mask -> octants & indices
+    uint8_t* flips; // flip, mask -> flipped mask
 } Lookups;
 
 void lookups_make_octants_indices_counts(Lookups* lookups) {
@@ -436,12 +437,27 @@ void lookups_make_queues(Lookups* lookups) {
     }
 }
 
+void lookups_make_flips(Lookups* lookups) {
+    lookups->flips = malloc(8*256 * sizeof(uint8_t));
+    
+    for (SInt flip = 0; flip < 8; flip++) {
+        for (SInt maskBase = 0; maskBase < 256; maskBase++) {
+            uint8_t mask = maskBase;
+            if (flip & 0b001) mask = ((mask & 0b10101010) >> 1) | ((mask & 0b01010101) << 1);
+            if (flip & 0b010) mask = ((mask & 0b11001100) >> 2) | ((mask & 0b00110011) << 2);
+            if (flip & 0b100) mask = ((mask & 0b11110000) >> 4) | ((mask & 0b00001111) << 4);
+            lookups->flips[(flip << 8) | maskBase] = mask;
+        }
+    }
+}
+
 Lookups* lookups_make() {
     Lookups* lookups = malloc(sizeof(Lookups));
     
     if (lookups) {
         lookups_make_octants_indices_counts(lookups);
         lookups_make_queues(lookups);
+        lookups_make_flips(lookups);
     }
     
     return lookups;
@@ -453,6 +469,7 @@ void lookups_free(Lookups* lookups) {
     if (lookups->indices) free(lookups->indices);
     if (lookups->sparse) free(lookups->sparse);
     if (lookups->packed) free(lookups->packed);
+    if (lookups->flips) free(lookups->flips);
     
     free(lookups);
 }
