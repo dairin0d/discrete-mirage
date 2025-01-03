@@ -1786,9 +1786,14 @@ static SInt draw_map_local(LocalVariables* v) {
 static void initialize_local_stencil(FramebufferInternal* framebuffer,
     OrthoStackItem* stack, Stencil* local_stencil, Rect* rect, Depth depth)
 {
+    SInt min_x = MAX(rect->min_x, stack->rect.min_x);
+    SInt min_y = MAX(rect->min_y, stack->rect.min_y);
+    SInt max_x = MIN(rect->max_x, stack->rect.max_x);
+    SInt max_y = MIN(rect->max_y, stack->rect.max_y);
+    
     #if STENCIL_SHIFT_Y == 0
-    SInt min_tx = rect->min_x & ~STENCIL_MASK_X;
-    SInt max_tx = rect->max_x & ~STENCIL_MASK_X;
+    SInt min_tx = min_x & ~STENCIL_MASK_X;
+    SInt max_tx = max_x & ~STENCIL_MASK_X;
     SInt tile_col = min_tx >> STENCIL_SHIFT_X;
     SInt tile_row = rect->min_y;
     Stencil* stencil_x = framebuffer->stencil_x;
@@ -1816,10 +1821,10 @@ static void initialize_local_stencil(FramebufferInternal* framebuffer,
         }
     }
     #else
-    SInt min_tx = rect->min_x & ~STENCIL_MASK_X;
-    SInt max_tx = rect->max_x & ~STENCIL_MASK_X;
-    SInt min_ty = rect->min_y & ~STENCIL_MASK_Y;
-    SInt max_ty = rect->max_y & ~STENCIL_MASK_Y;
+    SInt min_tx = min_x & ~STENCIL_MASK_X;
+    SInt max_tx = max_x & ~STENCIL_MASK_X;
+    SInt min_ty = min_y & ~STENCIL_MASK_Y;
+    SInt max_ty = max_y & ~STENCIL_MASK_Y;
     SInt tile_col = min_tx >> STENCIL_SHIFT_X;
     SInt tile_row = min_ty >> STENCIL_SHIFT_Y;
     Stencil* stencil_x = framebuffer->stencil_x;
