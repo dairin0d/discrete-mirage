@@ -37,6 +37,20 @@
 
 #include <discrete_mirage.h>
 
+// Some shorthands for convenience
+template <typename T> using DPtr = std::unique_ptr<T>;
+template <typename T> using UPtr = std::unique_ptr<T, void(*)(T*)>;
+
+#ifndef RGFW_BUFFER
+UPtr<GLuint> MakeGLTexture() {
+    GLuint handle;
+    glGenTextures(1, &handle);
+    return UPtr<GLuint>(new GLuint(handle), [](GLuint* handle){
+        glDeleteTextures(1, handle);
+    });
+}
+#endif
+
 #define PTR_OFFSET(array, offset) ((typeof(array))(((char*)(array)) + (offset)))
 #define PTR_INDEX(array, index) PTR_OFFSET((array), ((index) * (array##_stride)))
 
@@ -53,7 +67,7 @@ struct RGBA32 {
 };
 
 struct Object3D {
-    DMirOctree* octree;
+    int geometry_id;
     int root;
     DMirEffects effects;
     
@@ -66,20 +80,22 @@ struct Object3D {
 };
 
 struct ProgramState {
-    RGFW_window* window;
+    std::string window_title;
+    
+    UPtr<RGFW_window> window;
     int last_mouse_x;
     int last_mouse_y;
     
     #ifndef RGFW_BUFFER
-    GLuint gl_texture;
+    UPtr<GLuint> gl_texture;
     #endif
     
     std::vector<RGBA32> render_buffer;
     
-    DMirLookups* dmir_lookups;
-    DMirFramebuffer* dmir_framebuffer;
-    DMirBatcher* dmir_batcher;
-    std::vector<DMirRenderer*> dmir_renderers;
+    UPtr<DMirLookups> dmir_lookups;
+    UPtr<DMirFramebuffer> dmir_framebuffer;
+    UPtr<DMirBatcher> dmir_batcher;
+    std::vector<UPtr<DMirRenderer>> dmir_renderers;
     
     int thread_case;
     int thread_count;
@@ -103,17 +119,17 @@ struct ProgramState {
     int max_level;
     int splat_shape;
     
-    std::vector<Object3D*> objects;
-    std::vector<DMirOctree*> octrees;
+    std::vector<DPtr<Object3D>> objects;
+    std::vector<UPtr<DMirOctree>> octrees;
     
     bool use_accumulation;
     int accum_count;
     int accum_shift;
     int accum_index;
     std::vector<struct vec2> accum_offsets;
-    std::vector<RGB24*> accum_buffers;
-    int* accum_weights_lin;
-    int* accum_weights_exp;
+    std::vector<std::vector<RGB24>> accum_buffers;
+    std::vector<int> accum_weights_lin;
+    std::vector<int> accum_weights_exp;
 };
 
 
@@ -203,7 +219,29 @@ static void read_file(std::string path, int* file_size, char** data) {
     file.close();
 }
 
-DMirOctree* load_octree(std::string path, int mode) {
+void delete_octree(DMirOctree* octree) {
+    delete octree->addr;
+    delete octree;
+}
+
+UPtr<DMirOctree> create_octree(DMirLookups* lookups) {
+    auto octree = UPtr<DMirOctree>(new DMirOctree(), delete_octree);
+    octree->max_level = -1;
+    octree->is_packed = false;
+    octree->count = 0;
+    octree->addr = nullptr;
+    octree->mask = nullptr;
+    octree->data = nullptr;
+    octree->addr_stride = 0;
+    octree->mask_stride = 0;
+    octree->data_stride = 0;
+    octree->lookups = lookups;
+    octree->geometry.traverse_start = octree_traverse_start;
+    octree->geometry.traverse_next = octree_traverse_next;
+    return octree;
+}
+
+UPtr<DMirOctree> load_octree(DMirLookups* lookups, std::string path, int mode) {
     int file_size = 0;
     char* file_data = nullptr;
     read_file(path, &file_size, &file_data);
@@ -212,9 +250,11 @@ DMirOctree* load_octree(std::string path, int mode) {
     // uint32 address + uint8 mask + uint8*3 rgb
     const int node_size = 8;
     
-    if ((file_data == nullptr) || (file_size < 8*node_size)) return nullptr;
+    if ((file_data == nullptr) || (file_size < 8*node_size)) {
+        return UPtr<DMirOctree>(nullptr, nullptr);
+    }
     
-    DMirOctree* octree = new DMirOctree();
+    auto octree = create_octree(lookups);
     octree->max_level = -1;
     octree->is_packed = false;
     octree->count = file_size / node_size;
@@ -232,8 +272,6 @@ DMirOctree* load_octree(std::string path, int mode) {
         RGB24* color = (RGB24*)(mask + octree->count*1);
         
         if (mode == OCTREE_LOAD_PACKED) {
-            octree->is_packed = true;
-            
             int count = 1;
             addr[0] = 0;
             
@@ -254,14 +292,13 @@ DMirOctree* load_octree(std::string path, int mode) {
                     if (count > octree->count) {
                         // Recursion detected, can't proceed
                         delete new_data;
-                        delete file_data;
-                        delete octree;
-                        return nullptr;
+                        return octree;
                     }
                 }
             }
             
             octree->count = count;
+            octree->is_packed = true;
         } else {
             for (int i = 0; i < octree->count; i++) {
                 addr[i] = *PTR_INDEX(octree->addr, i);
@@ -283,7 +320,7 @@ DMirOctree* load_octree(std::string path, int mode) {
     return octree;
 }
 
-DMirOctree* make_recursive_cube(int r, int g, int b) {
+UPtr<DMirOctree> make_recursive_cube(DMirLookups* lookups, int r, int g, int b) {
     uint8_t mask_color[] = {255, (uint8_t)r, (uint8_t)g, (uint8_t)b};
     uint32_t* octree_data = (uint32_t*)(new uint8_t[8 * 8]);
     for (int node_index = 0; node_index < 8; node_index++) {
@@ -291,7 +328,7 @@ DMirOctree* make_recursive_cube(int r, int g, int b) {
         octree_data[node_index*2+1] = ((uint32_t*)mask_color)[0];
     }
     
-    DMirOctree* octree = new DMirOctree();
+    auto octree = create_octree(lookups);
     octree->max_level = -1;
     octree->is_packed = false;
     octree->count = 8;
@@ -302,11 +339,6 @@ DMirOctree* make_recursive_cube(int r, int g, int b) {
     octree->mask_stride = 8;
     octree->data_stride = 8;
     return octree;
-}
-
-void delete_octree(DMirOctree* octree) {
-    delete octree->addr;
-    delete octree;
 }
 
 struct mat4 calculate_projection_matrix(ProgramState* state) {
@@ -327,23 +359,29 @@ struct mat4 calculate_projection_matrix(ProgramState* state) {
     return smat4_inverse(view_matrix);
 }
 
-void create_scene(ProgramState* state, DMirOctree* file_octree) {
-    if (file_octree != nullptr) {
-        state->octrees.push_back(file_octree);
+void create_scene(ProgramState* state, std::string model_path) {
+    auto lookups = state->dmir_lookups.get();
+    
+    int main_geometry_id = -1;
+    auto file_octree = load_octree(lookups, model_path, octree_load_mode);
+    if (file_octree) {
+        main_geometry_id = 0;
+        state->octrees.push_back(std::move(file_octree));
     }
     
     const float grid_offset = 1.2f;
     const int grid_extent = 2;
     for (int gz = grid_extent; gz >= -grid_extent; gz--) {
         for (int gx = grid_extent; gx >= -grid_extent; gx--) {
-            auto octree = file_octree;
-            if (file_octree == nullptr) {
-                octree = make_recursive_cube(128+gx*32, 255, 128+gz*32);
-                state->octrees.push_back(octree);
+            auto geometry_id = main_geometry_id;
+            if (geometry_id < 0) {
+                geometry_id = state->octrees.size();
+                auto octree = make_recursive_cube(lookups, 128+gx*32, 255, 128+gz*32);
+                state->octrees.push_back(std::move(octree));
             }
             
             auto object3d = new Object3D();
-            object3d->octree = octree;
+            object3d->geometry_id = geometry_id;
             object3d->root = 0;
             object3d->hide = false;
             object3d->effects = {.max_level = -1, .dilation_abs = 0, .dilation_rel = 0};
@@ -355,7 +393,7 @@ void create_scene(ProgramState* state, DMirOctree* file_octree) {
                 object3d->cage[octant].y = (((octant >> 1) & 1) * 2) - 1;
                 object3d->cage[octant].z = (((octant >> 2) & 1) * 2) - 1;
             }
-            state->objects.push_back(object3d);
+            state->objects.push_back(DPtr<Object3D>(object3d));
             
             // if ((gx == 0) & (gz == 0)) {
             //     for (int octant = 0; octant < 8; octant++) {
@@ -379,11 +417,14 @@ void create_scene(ProgramState* state, DMirOctree* file_octree) {
 void render_scene_subset(ProgramState* state, struct mat4 proj_matrix, int imin, int imax) {
     struct vec3 cage[8];
     
+    auto batcher = state->dmir_batcher.get();
+    auto framebuffer = state->dmir_framebuffer.get();
+    
     if (imin < 0) imin = 0;
     if (imax >= state->objects.size()) imax = state->objects.size() - 1;
     
     for (int index = imin; index <= imax; index++) {
-        auto object3d = state->objects[index];
+        auto object3d = state->objects[index].get();
         if (object3d->hide) continue;
         
         auto matrix = trs_matrix(object3d->position, object3d->rotation, object3d->scale);
@@ -399,15 +440,18 @@ void render_scene_subset(ProgramState* state, struct mat4 proj_matrix, int imin,
         }
         effects.shape = state->splat_shape;
         
-        int group = index;
-        dmir_batcher_add(state->dmir_batcher, state->dmir_framebuffer,
-            group, (float*)cage, object3d->octree, object3d->root, effects);
+        if (object3d->geometry_id >= 0) {
+            int group = index;
+            auto octree = state->octrees[object3d->geometry_id].get();
+            dmir_batcher_add(batcher, framebuffer,
+                group, (float*)cage, octree, object3d->root, effects);
+        }
     }
     
-    dmir_batcher_sort(state->dmir_batcher);
+    dmir_batcher_sort(batcher);
     
     if (state->thread_count == 1) {
-        dmir_renderer_draw(state->dmir_renderers[0]);
+        dmir_renderer_draw(state->dmir_renderers[0].get());
     } else {
         // This naive approach has a notable overhead
         // (it only becomes faster than single-threaded
@@ -419,7 +463,7 @@ void render_scene_subset(ProgramState* state, struct mat4 proj_matrix, int imin,
         
         std::vector<std::thread> threads;
         for (int i = 0; i < state->thread_count; i++) {
-            threads.emplace_back(dmir_renderer_draw, state->dmir_renderers[i]);
+            threads.emplace_back(dmir_renderer_draw, state->dmir_renderers[i].get());
         }
         
         for (auto& thread : threads) {
@@ -466,7 +510,8 @@ void setup_renderers(ProgramState* state) {
     
     state->thread_count = parts_x * parts_y;
     
-    auto framebuffer = state->dmir_framebuffer;
+    auto batcher = state->dmir_batcher.get();
+    auto framebuffer = state->dmir_framebuffer.get();
     
     int tiles_x = (framebuffer->size_x + framebuffer->stencil_size_x - 1) / framebuffer->stencil_size_x;
     int tiles_y = (framebuffer->size_y + framebuffer->stencil_size_y - 1) / framebuffer->stencil_size_y;
@@ -480,9 +525,9 @@ void setup_renderers(ProgramState* state) {
             int end_x = ((tiles_x * px) / parts_x) * framebuffer->stencil_size_x;
             if (end_x > framebuffer->size_x) end_x = framebuffer->size_x;
             
-            auto renderer = state->dmir_renderers[index];
-            renderer->framebuffer = state->dmir_framebuffer;
-            renderer->batcher = state->dmir_batcher;
+            auto renderer = state->dmir_renderers[index].get();
+            renderer->framebuffer = framebuffer;
+            renderer->batcher = batcher;
             renderer->rect = {
                 .min_x = last_x,
                 .min_y = last_y,
@@ -499,6 +544,9 @@ void setup_renderers(ProgramState* state) {
 }
 
 void render_scene_to_buffer(ProgramState* state, RGBA32* pixels, int stride) {
+    auto batcher = state->dmir_batcher.get();
+    auto framebuffer = state->dmir_framebuffer.get();
+    
     if (state->use_accumulation) {
         auto accum_offset = state->accum_offsets[state->accum_index];
         state->frustum.offset_x = accum_offset.x;
@@ -509,15 +557,15 @@ void render_scene_to_buffer(ProgramState* state, RGBA32* pixels, int stride) {
     
     setup_renderers(state);
     
-    dmir_framebuffer_clear(state->dmir_framebuffer);
+    dmir_framebuffer_clear(framebuffer);
     
-    dmir_batcher_reset(state->dmir_batcher, state->viewport, state->frustum);
+    dmir_batcher_reset(batcher, state->viewport, state->frustum);
     
     render_scene_subset(state, proj_matrix, 0, state->objects.size()-1);
     
     DMirAffineInfo* affine_infos;
     uint32_t affine_count;
-    dmir_batcher_affine_get(state->dmir_batcher, &affine_infos, &affine_count);
+    dmir_batcher_affine_get(batcher, &affine_infos, &affine_count);
     
     int accum_bias = (1 << state->accum_shift) >> 1;
     auto rows_start = std::vector<RGB24*>{};
@@ -526,18 +574,21 @@ void render_scene_to_buffer(ProgramState* state, RGBA32* pixels, int stride) {
     rows_y.reserve(state->accum_count);
     for (int j = 0; j < state->accum_count; j++) {
         int buf_index = (state->accum_index - j + state->accum_count) % state->accum_count;
-        auto accum_buf = state->accum_buffers[buf_index];
+        auto accum_buf = state->accum_buffers[buf_index].data();
         rows_start.push_back(accum_buf);
         rows_y.push_back(accum_buf);
     }
     
-    int buf_stride = dmir_row_size(state->dmir_framebuffer);
+    auto accum_weights_lin = state->accum_weights_lin.data();
+    auto accum_weights_exp = state->accum_weights_exp.data();
+    
+    int buf_stride = dmir_row_size(framebuffer);
     for (int y = 0; y < state->screen_height; y++) {
         RGBA32* pixels_row = pixels + y * stride;
         
         int buf_row = y * buf_stride;
-        DMirDepth* depths_row = state->dmir_framebuffer->depth + buf_row;
-        DMirVoxelRef* voxels_row = state->dmir_framebuffer->voxel + buf_row;
+        DMirDepth* depths_row = framebuffer->depth + buf_row;
+        DMirVoxelRef* voxels_row = framebuffer->voxel + buf_row;
         
         for (int j = 0; j < state->accum_count; j++) {
             rows_y[j] = rows_start[j] + (y * state->screen_width);
@@ -571,7 +622,7 @@ void render_scene_to_buffer(ProgramState* state, RGBA32* pixels, int stride) {
                 int db = color.b - rows[0][x].b;
                 rows[0][x] = color;
                 
-                auto weights = ((dr|dg|db) == 0 ? state->accum_weights_lin : state->accum_weights_exp);
+                auto weights = ((dr|dg|db) == 0 ? accum_weights_lin : accum_weights_exp);
                 
                 dr = accum_bias;
                 dg = accum_bias;
@@ -630,7 +681,7 @@ int64_t render_scene(ProgramState* state) {
         }
     }
     #else
-    glBindTexture(GL_TEXTURE_2D, state->gl_texture);
+    glBindTexture(GL_TEXTURE_2D, *state->gl_texture.get());
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, state->screen_width, state->screen_height, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
     
     glViewport(0, 0, state->window->r.w, state->window->r.h);
@@ -638,7 +689,6 @@ int64_t render_scene(ProgramState* state) {
     glClear(GL_COLOR_BUFFER_BIT);
     
     glEnable(GL_TEXTURE_2D);
-    glBindTexture(GL_TEXTURE_2D, state->gl_texture);
     
     glBegin(GL_QUADS);
     glTexCoord2f(0.0f, 0.0f); glVertex2f(-1.0f, -1.0f);
@@ -655,7 +705,7 @@ int64_t render_scene(ProgramState* state) {
     return time;
 }
 
-int* make_accum_weights(int count, float base, int denominator) {
+void make_accum_weights(std::vector<int>& out, int count, float base, int denominator) {
     auto fweights = new float[count];
     auto iweights = new int[count];
     
@@ -680,7 +730,8 @@ int* make_accum_weights(int count, float base, int denominator) {
     
     delete fweights;
     
-    return iweights;
+    out.clear();
+    out.insert(out.end(), &iweights[0], &iweights[count]);
 }
 
 void print_stats(ProgramState* state) {
@@ -717,7 +768,8 @@ void print_state_info(ProgramState* state) {
 void process_event(ProgramState* state) {
     bool cam_updated = false;
     
-    auto event = &state->window->event;
+    auto window = state->window.get();
+    auto event = &window->event;
     
     if (event->type == RGFW_quit) {
         state->is_running = false;
@@ -781,8 +833,8 @@ void process_event(ProgramState* state) {
             state->is_cam_orbiting = true;
             state->last_mouse_x = event->point.x;
             state->last_mouse_y = event->point.y;
-            RGFW_window_mouseHold(state->window, RGFW_AREA(state->window->r.w, state->window->r.h));
-            RGFW_window_showMouse(state->window, RGFW_FALSE);
+            RGFW_window_mouseHold(window, RGFW_AREA(window->r.w, window->r.h));
+            RGFW_window_showMouse(window, RGFW_FALSE);
         } else if ((event->button == RGFW_mouseScrollDown) || (event->button == RGFW_mouseScrollUp)) {
             state->cam_zoom += event->scroll;
             cam_updated = true;
@@ -790,11 +842,11 @@ void process_event(ProgramState* state) {
     } else if (event->type == RGFW_mouseButtonReleased) {
         if (event->button == RGFW_mouseLeft) {
             state->is_cam_orbiting = false;
-            RGFW_window_showMouse(state->window, RGFW_TRUE);
-            RGFW_window_mouseUnhold(state->window);
-            int restored_x = state->window->r.x + state->last_mouse_x;
-            int restored_y = state->window->r.y + state->last_mouse_y;
-            RGFW_window_moveMouse(state->window, RGFW_POINT(restored_x, restored_y));
+            RGFW_window_showMouse(window, RGFW_TRUE);
+            RGFW_window_mouseUnhold(window);
+            int restored_x = window->r.x + state->last_mouse_x;
+            int restored_y = window->r.y + state->last_mouse_y;
+            RGFW_window_moveMouse(window, RGFW_POINT(restored_x, restored_y));
         }
     } else if (event->type == RGFW_mousePosChanged) {
         if (state->is_cam_orbiting) {
@@ -809,6 +861,8 @@ void process_event(ProgramState* state) {
 }
 
 void process_continuous_events(ProgramState* state) {
+    auto window = state->window.get();
+    
     auto view_matrix = trs_matrix(state->cam_pos, state->cam_rot, svec3_one());
     auto view_x_axis = get_matrix_vec3(&view_matrix, 0);
     auto view_y_axis = get_matrix_vec3(&view_matrix, 1);
@@ -817,37 +871,37 @@ void process_continuous_events(ProgramState* state) {
     
     // A bit of protection against "endless movement" in case
     // some other window suddenly snatches the focus from ours
-    if (!state->window->event.inFocus) return;
+    if (!window->event.inFocus) return;
     
-    if (RGFW_isPressed(state->window, RGFW_ShiftL) | RGFW_isPressed(state->window, RGFW_ShiftR)) {
+    if (RGFW_isPressed(window, RGFW_ShiftL) | RGFW_isPressed(window, RGFW_ShiftR)) {
         speed *= 0.1f;
     }
-    if (RGFW_isPressed(state->window, RGFW_ControlL) | RGFW_isPressed(state->window, RGFW_ControlR)) {
+    if (RGFW_isPressed(window, RGFW_ControlL) | RGFW_isPressed(window, RGFW_ControlR)) {
         speed *= 10;
     }
     
     bool cam_updated = false;
-    if (RGFW_isPressed(state->window, RGFW_d)) {
+    if (RGFW_isPressed(window, RGFW_d)) {
         state->cam_pos = svec3_add(state->cam_pos, svec3_multiply_f(view_x_axis, speed));
         cam_updated = true;
     }
-    if (RGFW_isPressed(state->window, RGFW_a)) {
+    if (RGFW_isPressed(window, RGFW_a)) {
         state->cam_pos = svec3_add(state->cam_pos, svec3_multiply_f(view_x_axis, -speed));
         cam_updated = true;
     }
-    if (RGFW_isPressed(state->window, RGFW_r)) {
+    if (RGFW_isPressed(window, RGFW_r)) {
         state->cam_pos = svec3_add(state->cam_pos, svec3_multiply_f(view_y_axis, speed));
         cam_updated = true;
     }
-    if (RGFW_isPressed(state->window, RGFW_f)) {
+    if (RGFW_isPressed(window, RGFW_f)) {
         state->cam_pos = svec3_add(state->cam_pos, svec3_multiply_f(view_y_axis, -speed));
         cam_updated = true;
     }
-    if (RGFW_isPressed(state->window, RGFW_w)) {
+    if (RGFW_isPressed(window, RGFW_w)) {
         state->cam_pos = svec3_add(state->cam_pos, svec3_multiply_f(view_z_axis, speed));
         cam_updated = true;
     }
-    if (RGFW_isPressed(state->window, RGFW_s)) {
+    if (RGFW_isPressed(window, RGFW_s)) {
         state->cam_pos = svec3_add(state->cam_pos, svec3_multiply_f(view_z_axis, -speed));
         cam_updated = true;
     }
@@ -856,15 +910,79 @@ void process_continuous_events(ProgramState* state) {
 }
 
 void process_events(ProgramState* state) {
-    while (RGFW_window_checkEvent(state->window)) {
+    auto window = state->window.get();
+    
+    while (RGFW_window_checkEvent(window)) {
         process_event(state);
     }
     
     process_continuous_events(state);
 }
 
+void main_loop(ProgramState& state) {
+    auto window = state.window.get();
+    
+    float max_fps = 30.0f;
+    int frame_time_min = (int)(1000.0f / max_fps);
+    int next_frame_update = 0;
+    
+    auto last_title_update = get_time_ms();
+    int frame_time_update_period = 500;
+    
+    int64_t accum_time = 0;
+    int64_t accum_count = 0;
+    
+    state.frame_count = 0;
+    
+    std::string frame_time_ms = "? ms";
+    
+    while (state.is_running && !RGFW_window_shouldClose(window)) {
+        process_events(&state);
+        
+        accum_time += render_scene(&state);
+        accum_count++;
+        
+        // print_stats(&state);
+        
+        RGFW_window_swapBuffers(window);
+        
+        auto time = get_time_ms();
+        
+        if ((time - last_title_update > frame_time_update_period) & (accum_count > 0)) {
+            last_title_update = time;
+            
+            int frame_time = (int)((accum_time / (float)accum_count) + 0.5f);
+            accum_time = 0;
+            accum_count = 0;
+            
+            frame_time_ms = std::to_string(frame_time) + " ms";
+        }
+        
+        std::string title = state.window_title + ": " +
+            frame_time_ms + ", " +
+            std::to_string(state.thread_count) + " thread(s)";
+        RGFW_window_setName(window, (char*)(title.c_str()));
+        
+        auto frame_remainder = next_frame_update - (int)time;
+        if (frame_remainder > 0) {
+            RGFW_sleep(frame_remainder);
+        }
+        next_frame_update = time + frame_time_min;
+        
+        state.frame_count++;
+    }
+}
+
 int main(int argc, char* argv[]) {
     ProgramState state = {
+        .window_title = "Discrete Mirage",
+        .window = UPtr<RGFW_window>(nullptr, nullptr),
+        #ifndef RGFW_BUFFER
+        .gl_texture = UPtr<GLuint>(nullptr, nullptr),
+        #endif
+        .dmir_lookups = UPtr<DMirLookups>(nullptr, nullptr),
+        .dmir_framebuffer = UPtr<DMirFramebuffer>(nullptr, nullptr),
+        .dmir_batcher = UPtr<DMirBatcher>(nullptr, nullptr),
         .thread_case = 0,
         .thread_count = 1,
         .screen_width = 640,
@@ -879,19 +997,18 @@ int main(int argc, char* argv[]) {
         .splat_shape = DMIR_SHAPE_RECT,
     };
     
-    std::string window_title = "Discrete Mirage";
-    
-    state.window = RGFW_createWindow(
-        window_title.c_str(),
-        RGFW_RECT(0, 0, state.screen_width, state.screen_height),
-        (u16)(RGFW_CENTER)
-    );
+    state.window = UPtr<RGFW_window>(
+        RGFW_createWindow(
+            state.window_title.c_str(),
+            RGFW_RECT(0, 0, state.screen_width, state.screen_height),
+            (u16)(RGFW_CENTER)
+        ), RGFW_window_close);
     
     state.render_buffer.resize(state.screen_width * state.screen_height, {.r = 0, .g = 0, .b = 0, .a = 255});
     
     #ifndef RGFW_BUFFER
-    glGenTextures(1, &state.gl_texture);
-    glBindTexture(GL_TEXTURE_2D, state.gl_texture);
+    state.gl_texture = MakeGLTexture();
+    glBindTexture(GL_TEXTURE_2D, *state.gl_texture.get());
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, state.screen_width, state.screen_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -912,125 +1029,49 @@ int main(int argc, char* argv[]) {
         .perspective = 0,
     };
     
-    state.dmir_lookups = dmir_lookups_make();
+    state.dmir_lookups = UPtr<DMirLookups>(
+        dmir_lookups_make(),
+        &dmir_lookups_free);
     
-    state.dmir_framebuffer = dmir_framebuffer_make(state.screen_width, state.screen_height);
+    state.dmir_framebuffer = UPtr<DMirFramebuffer>(
+        dmir_framebuffer_make(state.screen_width, state.screen_height),
+        &dmir_framebuffer_free);
     
-    state.dmir_batcher = dmir_batcher_make(state.dmir_lookups);
+    state.dmir_batcher = UPtr<DMirBatcher>(
+        dmir_batcher_make(state.dmir_lookups.get()),
+        &dmir_batcher_free);
     
     for (int i = 0; i < 16; i++) {
-        auto dmir_renderer = dmir_renderer_make();
-        state.dmir_renderers.push_back(dmir_renderer);
+        auto renderer = UPtr<DMirRenderer>(
+            dmir_renderer_make(),
+            &dmir_renderer_free);
+        state.dmir_renderers.push_back(std::move(renderer));
     }
     
     state.accum_count = 4;
     state.accum_index = 0;
+    state.accum_buffers.resize(state.accum_count);
     for (int i = 0; i < state.accum_count; i++) {
         auto acc_x = (((i >> 0) & 1) - 0.5f) * 0.5f;
         auto acc_y = (((i >> 1) & 1) - 0.5f) * 0.5f;
         state.accum_offsets.push_back(svec2(acc_x, acc_y));
-        auto accum_buf = new RGB24[state.screen_width * state.screen_height];
-        state.accum_buffers.push_back(accum_buf);
+        state.accum_buffers[i].resize(state.screen_width * state.screen_height);
     }
     
     state.accum_shift = 16;
-    state.accum_weights_lin = make_accum_weights(state.accum_count, 1.0f, 1 << state.accum_shift);
-    state.accum_weights_exp = make_accum_weights(state.accum_count, 0.65f, 1 << state.accum_shift);
+    make_accum_weights(state.accum_weights_lin, state.accum_count, 1.0f, 1 << state.accum_shift);
+    make_accum_weights(state.accum_weights_exp, state.accum_count, 0.65f, 1 << state.accum_shift);
     
-    DMirOctree* file_octree = nullptr;
+    std::string model_path;
     if (argc != 2) {
         std::cerr << "Usage: " << argv[0] << " <file_path>" << std::endl;
     } else {
-        file_octree = load_octree(argv[1], octree_load_mode);
-        
-        file_octree->lookups = state.dmir_lookups;
-        file_octree->geometry.traverse_start = octree_traverse_start;
-        file_octree->geometry.traverse_next = octree_traverse_next;
+        model_path = argv[1];
     }
     
-    create_scene(&state, file_octree);
+    create_scene(&state, model_path);
     
-    float max_fps = 30.0f;
-    int frame_time_min = (int)(1000.0f / max_fps);
-    int next_frame_update = 0;
-    
-    auto last_title_update = get_time_ms();
-    int frame_time_update_period = 500;
-    
-    int64_t accum_time = 0;
-    int64_t accum_count = 0;
-    
-    state.frame_count = 0;
-    
-    std::string frame_time_ms = "? ms";
-    
-    while (state.is_running && !RGFW_window_shouldClose(state.window)) {
-        process_events(&state);
-        
-        accum_time += render_scene(&state);
-        accum_count++;
-        
-        // print_stats(&state);
-        
-        RGFW_window_swapBuffers(state.window);
-        
-        auto time = get_time_ms();
-        
-        if ((time - last_title_update > frame_time_update_period) & (accum_count > 0)) {
-            last_title_update = time;
-            
-            int frame_time = (int)((accum_time / (float)accum_count) + 0.5f);
-            accum_time = 0;
-            accum_count = 0;
-            
-            frame_time_ms = std::to_string(frame_time) + " ms";
-        }
-        
-        std::string title = window_title + ": " +
-            frame_time_ms + ", " +
-            std::to_string(state.thread_count) + " thread(s)";
-        RGFW_window_setName(state.window, (char*)(title.c_str()));
-        
-        auto frame_remainder = next_frame_update - (int)time;
-        if (frame_remainder > 0) {
-            RGFW_sleep(frame_remainder);
-        }
-        next_frame_update = time + frame_time_min;
-        
-        state.frame_count++;
-    }
-    
-    #ifndef RGFW_BUFFER
-    glDeleteTextures(1, &state.gl_texture);
-    #endif
-    
-    delete state.accum_weights_lin;
-    delete state.accum_weights_exp;
-    
-    for (int i = 0; i < state.accum_buffers.size(); i++) {
-        delete state.accum_buffers[i];
-    }
-    
-    for (int index = 0; index < state.objects.size(); index++) {
-        delete state.objects[index];
-    }
-    
-    for (int index = 0; index < state.octrees.size(); index++) {
-        delete_octree(state.octrees[index]);
-    }
-    
-    for (int i = 0; i < state.dmir_renderers.size(); i++) {
-        auto dmir_renderer = state.dmir_renderers[i];
-        dmir_renderer_free(dmir_renderer);
-    }
-    
-    dmir_batcher_free(state.dmir_batcher);
-    
-    dmir_framebuffer_free(state.dmir_framebuffer);
-    
-    dmir_lookups_free(state.dmir_lookups);
-    
-    RGFW_window_close(state.window);
+    main_loop(state);
     
     return 0;
 }
