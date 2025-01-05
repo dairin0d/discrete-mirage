@@ -7,8 +7,6 @@
 
 #include "discrete_mirage.h"
 
-#define USE_CALLBACK 1
-
 // NULL is defined in <stdlib.h>
 #define FALSE 0
 #define TRUE 1
@@ -1401,11 +1399,6 @@ static SInt draw_map(LocalVariables* v) {
         Coord min_my = PIXEL_TO_COORD(v->rect.min_y) - (v->position.y - (v->map->half >> v->level));
         SInt map_shift = v->map->shift - v->level;
         
-        #if USE_CALLBACK == 0
-        uint8_t indices_mask = (v->octree->is_packed ? 0 : 255);
-        uint32_t o2i = v->indices[v->mask | indices_mask];
-        #endif
-        
         Coord mx, my;
         SInt x, y;
         for (my = min_my, y = v->rect.min_y; y <= v->rect.max_y; y++, my += SUBPIXEL_SIZE) {
@@ -1429,11 +1422,6 @@ static SInt draw_map(LocalVariables* v) {
                 Depth z = v->position.z + v->deltas[octant].z;
                 
                 if (!v->is_cube) {
-                    #if USE_CALLBACK == 0
-                    uint32_t index = (o2i >> (octant*4)) & 7;
-                    v->data_ref = v->child_start + index;
-                    VALIDATE_ADDRESS(v->data_ref, v->octree, continue);
-                    #else
                     if (!v->map_traversals_exist) {
                         if (!v->octree->geometry.traverse_next(
                             v->octree, v->traversal, v->octant,
@@ -1441,7 +1429,6 @@ static SInt draw_map(LocalVariables* v) {
                         v->map_traversals_exist = TRUE;
                     }
                     v->data_ref = v->map_traversals[8].data[octant];
-                    #endif
                 }
                 
                 SPLAT(v->framebuffer, v->fragments, abs_x, abs_y, z,
@@ -1467,20 +1454,10 @@ static SInt draw_map(LocalVariables* v) {
         Coord min_my = PIXEL_TO_COORD(v->rect.min_y) - (v->position.y - (v->map->half >> v->level));
         SInt map_shift = v->map->shift - v->level;
         
-        #if USE_CALLBACK == 0
-        uint8_t indices_mask = (v->octree->is_packed ? 0 : 255);
-        uint32_t o2i = v->indices[v->mask | indices_mask];
-        #endif
-        
         uint64_t mask64 = 0;
         if (!v->is_cube) {
             Queue queue = v->queues_forward[v->mask];
-            #if USE_CALLBACK == 0
-            for (; queue.indices != 0; queue.indices >>= 4, queue.octants >>= 4) {
-                uint64_t mask8 = *PTR_INDEX(v->octree->mask, (v->child_start + (queue.indices & 7)));
-                mask64 |= (mask8 ? mask8 : 255) << ((queue.octants & 7) * 8);
-            }
-            #else
+            
             if (!v->octree->geometry.traverse_next(
                 v->octree, v->traversal, v->octant,
                 &v->map_traversals[8])) return TRUE;
@@ -1489,7 +1466,6 @@ static SInt draw_map(LocalVariables* v) {
                 uint64_t mask8 = v->map_traversals[8].mask[queue.octants & 7];
                 mask64 |= (mask8 ? mask8 : 255) << ((queue.octants & 7) * 8);
             }
-            #endif
         } else {
             mask64 = UINT64_MAX;
         }
@@ -1524,23 +1500,6 @@ static SInt draw_map(LocalVariables* v) {
                 Depth z = v->position.z + v->deltas[octant64].z;
                 
                 if (!v->is_cube) {
-                    #if USE_CALLBACK == 0
-                    uint32_t index = (o2i >> (octant64*4)) & 7;
-                    v->data_ref = v->child_start + index;
-                    VALIDATE_ADDRESS(v->data_ref, v->octree, continue);
-                    
-                    if (use_suboctants) {
-                        uint8_t sub_mask_full = *PTR_INDEX(v->octree->mask, v->data_ref);
-                        if (sub_mask_full != 0) {
-                            uint8_t sub_mask = sub_mask_full & (mask_xy >> (octant64 * 8));
-                            uint32_t octant = v->queues_forward[sub_mask].octants & 7;
-                            z += DEPTH_HALVE(v->deltas[octant].z);
-                            index = (v->indices[sub_mask_full | indices_mask] >> (octant*4)) & 7;
-                            v->data_ref = *PTR_INDEX(v->octree->addr, v->data_ref) + index;
-                            VALIDATE_ADDRESS(v->data_ref, v->octree, continue);
-                        }
-                    }
-                    #else
                     v->data_ref = v->map_traversals[8].data[octant64];
                     
                     if (use_suboctants) {
@@ -1558,7 +1517,6 @@ static SInt draw_map(LocalVariables* v) {
                             v->data_ref = v->map_traversals[octant64].data[octant];
                         }
                     }
-                    #endif
                 }
                 
                 SPLAT(v->framebuffer, v->fragments, abs_x, abs_y, z,
@@ -1691,9 +1649,7 @@ static void render_ortho_local_stencil(FramebufferInternal* framebuffer, Fragmen
         .max_y = clip_rect.max_y - offset_y
     };
     
-    #if USE_CALLBACK != 0
     SInt octant = 0;
-    #endif
     
     LocalVariables v = {
         .framebuffer = framebuffer,
@@ -1727,18 +1683,6 @@ static void render_ortho_local_stencil(FramebufferInternal* framebuffer, Fragmen
     
     do {
         {
-            #if USE_CALLBACK == 0
-            // Pop an entry from the stack
-            if (stack->count == 0) {
-                stack--;
-                continue;
-            }
-            
-            stack->count--;
-            v.address = stack->addresses[stack->count];
-            
-            SInt octant = stack->octants[stack->count];
-            #else
             if (stack->queue == 0) {
                 stack--;
                 continue;
@@ -1747,7 +1691,6 @@ static void render_ortho_local_stencil(FramebufferInternal* framebuffer, Fragmen
             stack->queue >>= 4;
             // v.mask = stack->traversal.mask[octant];
             v.address = stack->traversal.node[octant];
-            #endif
             
             v.position.x = stack->center.x + stack->deltas[octant].x;
             v.position.y = stack->center.y + stack->deltas[octant].y;
@@ -1795,11 +1738,7 @@ static void render_ortho_local_stencil(FramebufferInternal* framebuffer, Fragmen
             
             // Non-voxel data at max level might not actually be stored
             if (!is_splat) {
-                #if USE_CALLBACK == 0
-                v.mask = *PTR_INDEX(octree->mask, v.address);
-                #else
                 v.mask = stack->traversal.mask[octant];
-                #endif
                 is_splat = !v.mask;
             }
             
@@ -1812,62 +1751,22 @@ static void render_ortho_local_stencil(FramebufferInternal* framebuffer, Fragmen
         
         if (is_splat) {
             v.extent = stack->extent;
-            #if USE_CALLBACK == 0
-            v.data_ref = v.address;
-            #else
             v.data_ref = stack->traversal.data[octant];
-            #endif
             draw_splat(&v);
             continue;
-        }
-        
-        if (!v.is_cube) {
-            #if USE_CALLBACK == 0
-            v.child_start = *PTR_INDEX(octree->addr, v.address);
-            // #else
-            // // Do the same thing for now
-            // v.child_start = *PTR_INDEX(octree->addr, v.address);
-            #endif
         }
         
         #ifdef USE_MAP
         if (v.size_max < 4) {
             v.deltas = stack->deltas;
             v.level = stack->level;
-            #if USE_CALLBACK == 0
-            v.data_ref = v.address;
-            #else
             v.data_ref = stack->traversal.data[octant];
             v.traversal = &stack->traversal;
             v.octant = octant;
-            #endif
             if (draw_map(&v)) continue;
         }
         #endif
         
-        #if USE_CALLBACK == 0
-        // Push non-empty children on the stack
-        stack++;
-        stack->count = 0;
-        stack->center = v.position;
-        stack->is_cube = v.is_cube;
-        
-        // Empirically, this seems to offer no performance benefit
-        // #ifdef DMIR_SKIP_OCCLUDED_ROWS
-        // stack->rect.min_y = v.min_y;
-        // #endif
-        
-        Queue queue = queues_reverse[v.mask];
-        for (; queue.indices != 0; queue.indices >>= 4, queue.octants >>= 4) {
-            if (!v.is_cube) {
-                v.address = v.child_start + (queue.indices & 7);
-                VALIDATE_ADDRESS(v.address, octree, continue);
-            }
-            stack->octants[stack->count] = (queue.octants & 7);
-            stack->addresses[stack->count] = v.address;
-            stack->count++;
-        }
-        #else
         stack++;
         stack->rect = v.rect;
         stack->center = v.position;
@@ -1886,7 +1785,6 @@ static void render_ortho_local_stencil(FramebufferInternal* framebuffer, Fragmen
         }
         
         stack->queue = queues_forward[v.mask].octants;
-        #endif
     } while (stack > stack_start);
 }
 #endif
@@ -1944,11 +1842,6 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
     position.y = matrix[3].y;
     position.z = matrix[3].z;
     
-    #if USE_CALLBACK == 0
-    Queue* queues = (octree->is_packed ? batcher->lookups->packed : batcher->lookups->sparse);
-    Queue* queues_forward = queues + (((octant_order << 3) | (starting_octant ^ 0b000)) << 8);
-    Queue* queues_reverse = queues + (((octant_order << 3) | (starting_octant ^ 0b111)) << 8);
-    #else
     Queue* queues = batcher->lookups->sparse;
     Queue* queues_forward = queues + (((octant_order << 3) | (starting_octant ^ 0b000)) << 8);
     Queue* queues_reverse = queues + (((octant_order << 3) | (starting_octant ^ 0b111)) << 8);
@@ -1958,7 +1851,6 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
     stack->queue = 0;
     
     SInt octant = 0;
-    #endif
     
     uint32_t* indices = batcher->lookups->indices;
     
@@ -2005,17 +1897,6 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
     
     do {
         {
-            #if USE_CALLBACK == 0
-            // Pop an entry from the stack
-            if (stack->count == 0) {
-                stack--;
-                continue;
-            }
-            stack->count--;
-            v.address = stack->addresses[stack->count];
-            
-            SInt octant = stack->octants[stack->count];
-            #else
             if (stack->queue == 0) {
                 stack--;
                 continue;
@@ -2024,7 +1905,6 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
             stack->queue >>= 4;
             // v.mask = stack->traversal.mask[octant];
             v.address = stack->traversal.node[octant];
-            #endif
             
             v.position.x = stack->center.x + stack->deltas[octant].x;
             v.position.y = stack->center.y + stack->deltas[octant].y;
@@ -2069,11 +1949,7 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
             
             // Non-voxel data at max level might not actually be stored
             if (!is_splat) {
-                #if USE_CALLBACK == 0
-                v.mask = *PTR_INDEX(octree->mask, v.address);
-                #else
                 v.mask = stack->traversal.mask[octant];
-                #endif
                 is_splat = !v.mask;
             }
             
@@ -2086,58 +1962,22 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
         
         if (is_splat) {
             v.extent = stack->extent;
-            #if USE_CALLBACK == 0
-            v.data_ref = v.address;
-            #else
             v.data_ref = stack->traversal.data[octant];
-            #endif
             draw_splat(&v);
             continue;
-        }
-        
-        if (!v.is_cube) {
-            #if USE_CALLBACK == 0
-            v.child_start = *PTR_INDEX(octree->addr, v.address);
-            // #else
-            // // Do the same thing for now
-            // v.child_start = *PTR_INDEX(octree->addr, v.address);
-            #endif
         }
         
         #ifdef USE_MAP
         if (v.size_max < 4) {
             v.deltas = stack->deltas;
             v.level = stack->level;
-            #if USE_CALLBACK == 0
-            v.data_ref = v.address;
-            #else
             v.data_ref = stack->traversal.data[octant];
             v.traversal = &stack->traversal;
             v.octant = octant;
-            #endif
             if (draw_map(&v)) continue;
         }
         #endif
         
-        #if USE_CALLBACK == 0
-        // Push non-empty children on the stack
-        stack++;
-        stack->count = 0;
-        stack->rect = v.rect;
-        stack->center = v.position;
-        stack->is_cube = v.is_cube;
-        
-        Queue queue = queues_reverse[v.mask];
-        for (; queue.indices != 0; queue.indices >>= 4, queue.octants >>= 4) {
-            if (!v.is_cube) {
-                v.address = v.child_start + (queue.indices & 7);
-                VALIDATE_ADDRESS(v.address, octree, continue);
-            }
-            stack->octants[stack->count] = (queue.octants & 7);
-            stack->addresses[stack->count] = v.address;
-            stack->count++;
-        }
-        #else
         stack++;
         stack->rect = v.rect;
         stack->center = v.position;
@@ -2156,7 +1996,6 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
         }
         
         stack->queue = queues_forward[v.mask].octants;
-        #endif
         
         #ifdef STENCIL_LOCAL_SIZE
         if ((v.size_max + 2) < STENCIL_LOCAL_SIZE) {
@@ -2469,16 +2308,6 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer_ptr,
     
     if (!isfinite(bounds.max_z - bounds.min_z)) return;
     
-    #if USE_CALLBACK == 0
-    if (octree->max_level >= 0) {
-        if (effects.max_level < 0) {
-            effects.max_level = octree->max_level;
-        } else {
-            MIN_UPDATE(effects.max_level, octree->max_level);
-        }
-    }
-    #endif
-    
     effects.dilation_abs = MAX(effects.dilation_abs, 0) - 0.5f;
     effects.dilation_rel = CLAMP(effects.dilation_rel, 0, 1) * 0.5f;
     
@@ -2496,19 +2325,6 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer_ptr,
     stack->rect = viewport;
     stack->is_behind = (bounds.min_z <= batcher->eye_z);
     
-    #if USE_CALLBACK == 0
-    Address address = root;
-    VALIDATE_ADDRESS(address, octree, return);
-    
-    SInt mask = 0;
-    Address child_start = address;
-    if (stack->level != effects.max_level) {
-        mask = *PTR_INDEX(octree->mask, address);
-        child_start = *PTR_INDEX(octree->addr, address);
-    }
-    
-    Queue* queues = (octree->is_packed ? batcher->lookups->packed : batcher->lookups->sparse);
-    #else
     if (!octree->geometry.traverse_start(octree, root, 0, &stack->traversal)) return;
     
     stack->queue = 0;
@@ -2518,27 +2334,11 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer_ptr,
     SInt mask = stack->traversal.mask[octant];
     
     Queue* queues = batcher->lookups->sparse;
-    #endif
     
     goto grid_initialized;
     
     do {
         {
-            #if USE_CALLBACK == 0
-            // Pop an entry from the stack
-            if (stack->count == 0) {
-                stack--;
-                continue;
-            }
-            stack->count--;
-            child_start = stack->subnodes[stack->count];
-            mask = stack->masks[stack->count];
-            address = stack->addresses[stack->count];
-            
-            // Copy corner vertices from the parent grid's sub-octant vertices
-            SInt octant = stack->octants[stack->count];
-            initialize_subgrid(stack->grid, (stack-1)->grid, octant);
-            #else
             if (stack->queue == 0) {
                 stack--;
                 continue;
@@ -2548,7 +2348,6 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer_ptr,
             mask = stack->traversal.mask[octant];
             address = stack->traversal.node[octant];
             initialize_subgrid(stack->grid, (stack-1)->grid, octant);
-            #endif
         }
         
         // Find the min/max of the corner vertices
@@ -2642,11 +2441,7 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer_ptr,
                 subtree->rect = rect;
                 cage_from_grid(stack->grid, subtree->cage);
                 subtree->node_ref = address;
-                #if USE_CALLBACK == 0
-                subtree->data_ref = address;
-                #else
                 subtree->data_ref = stack->traversal.data[octant];
-                #endif
                 subtree->effects = effects;
                 subtree->effects.max_level -= stack->level;
                 subtree->effects.dilation_rel *= (1 << stack->level);
@@ -2666,31 +2461,6 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer_ptr,
         
         SInt octant_order = calculate_octant_order_grid(stack->grid);
         
-        #if USE_CALLBACK == 0
-        Queue* queues_reverse = queues + (((octant_order << 3) | (starting_octant ^ 0b111)) << 8);
-        
-        // Push non-empty children on the stack
-        stack++;
-        stack->count = 0;
-        stack->level = (stack-1)->level + 1;
-        stack->rect = rect;
-        stack->is_behind = intersects_eye_plane;
-        stack->affine_id = (stack-1)->affine_id;
-        
-        SInt is_max_level = (stack->level == effects.max_level);
-        Queue queue = queues_reverse[mask];
-        for (; queue.indices != 0; queue.indices >>= 4, queue.octants >>= 4) {
-            address = child_start + (queue.indices & 7);
-            VALIDATE_ADDRESS(address, octree, continue);
-            stack->octants[stack->count] = (queue.octants & 7);
-            stack->addresses[stack->count] = address;
-            if (!is_max_level) {
-                stack->subnodes[stack->count] = *PTR_INDEX(octree->addr, address);
-                stack->masks[stack->count] = *PTR_INDEX(octree->mask, address);
-            }
-            stack->count++;
-        }
-        #else
         if (octree->geometry.traverse_next(octree, &stack->traversal, octant, &(stack+1)->traversal)) {
             stack++;
             stack->level = (stack-1)->level + 1;
@@ -2701,7 +2471,6 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer_ptr,
             Queue* queues_forward = queues + (((octant_order << 3) | (starting_octant)) << 8);
             stack->queue = queues_forward[mask].octants;
         }
-        #endif
     } while (stack > stack_start);
 }
 
@@ -2971,19 +2740,6 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
     stack->is_behind = (bounds.min_z <= batcher->eye_z);
     stack->is_cube = FALSE;
     
-    #if USE_CALLBACK == 0
-    Address address = subtree->node_ref;
-    VALIDATE_ADDRESS(address, octree, return);
-    
-    SInt mask = 0;
-    Address child_start = address;
-    if (stack->level != effects.max_level) {
-        mask = *PTR_INDEX(octree->mask, address);
-        child_start = *PTR_INDEX(octree->addr, address);
-    }
-    
-    Queue* queues = (octree->is_packed ? batcher->lookups->packed : batcher->lookups->sparse);
-    #else
     Address address = subtree->node_ref;
     if (!octree->geometry.traverse_start(octree, address, subtree->data_ref, &stack->traversal)) return;
     
@@ -2993,7 +2749,6 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
     SInt mask = stack->traversal.mask[octant];
     
     Queue* queues = batcher->lookups->sparse;
-    #endif
     
     Fragment* fragments_start = renderer->fragments;
     // IMPORTANT: we need to update a local variable, not renderer->fragments!
@@ -3003,21 +2758,6 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
     
     do {
         {
-            #if USE_CALLBACK == 0
-            // Pop an entry from the stack
-            if (stack->count == 0) {
-                stack--;
-                continue;
-            }
-            stack->count--;
-            child_start = stack->subnodes[stack->count];
-            mask = stack->masks[stack->count];
-            address = stack->addresses[stack->count];
-            
-            // Copy corner vertices from the parent grid's sub-octant vertices
-            SInt octant = stack->octants[stack->count];
-            initialize_subgrid(stack->grid, (stack-1)->grid, octant);
-            #else
             if (stack->queue == 0) {
                 stack--;
                 continue;
@@ -3027,7 +2767,6 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
             mask = stack->traversal.mask[octant];
             address = stack->traversal.node[octant];
             initialize_subgrid(stack->grid, (stack-1)->grid, octant);
-            #endif
         }
         
         // Find the min/max of the corner vertices
@@ -3128,10 +2867,7 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
             sub_effects.dilation_abs += projection_distortion * 0.5f;
             sub_effects.dilation_rel *= (1 << stack->level);
             
-            Address data_ref = address;
-            #if USE_CALLBACK != 0
-            data_ref = stack->traversal.data[octant];
-            #endif
+            Address data_ref = stack->traversal.data[octant];
             
             render_ortho(renderer, batcher, framebuffer, fragments,
                 affine_id, octree, address, data_ref, sub_effects, is_cube,
@@ -3149,37 +2885,6 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
         
         SInt octant_order = calculate_octant_order_grid(stack->grid);
         
-        #if USE_CALLBACK == 0
-        Queue* queues_reverse = queues + (((octant_order << 3) | (starting_octant ^ 0b111)) << 8);
-        
-        // Push non-empty children on the stack
-        stack++;
-        stack->count = 0;
-        stack->level = (stack-1)->level + 1;
-        stack->rect = rect;
-        stack->is_behind = intersects_eye_plane;
-        stack->is_cube = is_cube;
-        
-        SInt is_max_level = (stack->level == effects.max_level);
-        Queue queue = queues_reverse[mask];
-        for (; queue.indices != 0; queue.indices >>= 4, queue.octants >>= 4) {
-            if (!is_cube) {
-                address = child_start + (queue.indices & 7);
-                VALIDATE_ADDRESS(address, octree, continue);
-            }
-            
-            stack->octants[stack->count] = (queue.octants & 7);
-            stack->addresses[stack->count] = address;
-            if (is_cube) {
-                stack->subnodes[stack->count] = address;
-                stack->masks[stack->count] = 255;
-            } else if (!is_max_level) {
-                stack->subnodes[stack->count] = *PTR_INDEX(octree->addr, address);
-                stack->masks[stack->count] = *PTR_INDEX(octree->mask, address);
-            }
-            stack->count++;
-        }
-        #else
         stack++;
         stack->level = (stack-1)->level + 1;
         stack->rect = rect;
@@ -3200,7 +2905,6 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
         
         Queue* queues_forward = queues + (((octant_order << 3) | (starting_octant)) << 8);
         stack->queue = queues_forward[mask].octants;
-        #endif
     } while (stack > stack_start);
     
     #ifdef DMIR_USE_SPLAT_DEFERRED
