@@ -3,12 +3,10 @@
 
 // Discrete Mirage: A library for rendering voxel models on CPU.
 // Features:
-// * can render basic in-RAM octrees of a specific layout
+// * can render octree-like geometries (octrees, DAGs, etc.)
 // * front-to-back splatting with occlusion culling
 // * supports cage deformations and splat dilation
 // * supports several splat shapes: points, quads, squares, circles, cubes
-// Limitations:
-// * currently has no support for DAGs or out-of-core rendering
 
 #ifndef DISCRETE_MIRAGE
 #define DISCRETE_MIRAGE
@@ -21,7 +19,7 @@ extern "C" {
 
 // ===================================================== //
 
-const char DMIR_VERSION[] = "1.2.0";
+const char DMIR_VERSION[] = "2.0.0";
 
 // ===================================================== //
 
@@ -92,15 +90,6 @@ const char DMIR_VERSION[] = "1.2.0";
 // until the end of current subtree's rendering
 #define DMIR_USE_SPLAT_DEFERRED
 
-// Draw a node as a pixel when reaching 1x1 px node size
-// (if disabled, general rect-drawing code will be used
-// for nodes of 1x1 px size)
-#define DMIR_USE_SPLAT_PIXEL
-
-// Draw sub-nodes immediately as pixels at the projected
-// node centers, when reaching <= 2x2 px node size
-// #define DMIR_USE_BLIT_AT_2X2
-
 // This determines the size (resolution) of octant and
 // sub-octant maps (specified as a power-of-2)
 // Note: maps also require DMIR_COORD_FIXED to be used
@@ -123,10 +112,6 @@ const char DMIR_VERSION[] = "1.2.0";
 #define DMIR_MAP_ENSURE_PIXEL
 
 // ===================================================== //
-
-// Enable this if you aren't sure that your octree(s)
-// contain valid node addresses everywhere
-#define DMIR_VALIDATE_ADDRESSES
 
 // Whether to count the diagnostic stats
 #define DMIR_CALCULATE_STATS
@@ -191,6 +176,14 @@ typedef struct DMirTraversal {
 // The "base class" of traversable structures (octrees,
 // DAGs, etc.); implementations of the corresponding
 // structs must have it as the first field.
+// traverse_start: given the initial references to
+// a node (node_ref) and a voxel (data_ref), populate
+// dst's 1st item with actual information about the node.
+// traverse_next: given the previous level's traversal
+// info and the item index, populate dst's items with
+// the information about the item node's children.
+// The semantics of node references and data references
+// are entirely up to the implementation.
 typedef struct DMirGeometry {
     DMirBool (*traverse_start)(void* geometry, DMirAddress node_ref, DMirAddress data_ref, DMirTraversal* dst);
     DMirBool (*traverse_next)(void* geometry, DMirTraversal* src, int32_t index, DMirTraversal* dst);
@@ -224,35 +217,10 @@ typedef struct DMirFrustum {
     float offset_y;
 } DMirFrustum;
 
-// addr: address (index) of a node's first child.
-// mask: node's octant mask (zero mask indicates a leaf).
-// data: node's voxel data.
-// *_stride: offset (in bytes) between each item (this way,
-// addr/mask/data can be stored as separate arrays or as
-// one interleaved array).
-// count: number of nodes (used to check if node addresses
-// stay within array bounds; see DMIR_VALIDATE_ADDRESSES).
-// max_level: if >= 0, limits the depth of octree traversal.
-// is_packed: whether the octree nodes are packed (empty
-// children are not stored) or sparse (always 8 children).
-typedef struct DMirOctree {
-    DMirGeometry geometry;
-    DMirLookups* lookups;
-    uint32_t* addr;
-    uint8_t* mask;
-    uint8_t* data;
-    uint32_t addr_stride;
-    uint32_t mask_stride;
-    uint32_t data_stride;
-    uint32_t count;
-    uint32_t max_level;
-    DMirBool is_packed;
-} DMirOctree;
-
-// max_level: if >= 0, limits the depth of octree traversal.
+// max_level: if >= 0, limits the depth of traversal.
 // dilation_abs: dilate each node by this amount of pixels.
 // dilation_rel: dilate each node by a fraction of the root
-// octree's cage size (e.g. for sparse point clouds).
+// node's cage size (e.g. for sparse point clouds).
 // shape: how the leaf nodes will be rendered.
 typedef struct DMirEffects {
     int32_t max_level;
@@ -261,22 +229,22 @@ typedef struct DMirEffects {
     int32_t shape;
 } DMirEffects;
 
-// Each batched octree may be split into one or more
+// Each batched geometry may be split into one or more
 // of these structs (depending on the cage deformation).
 // group: same value that was passed to dmir_batcher_add(...)
-// (this can be useful if multiple octree instances may
+// (this can be useful if multiple geometry instances may
 // belong to / constitute a single "3D object").
-// octree: reference to the octree itself.
+// geometry: reference to the geometry itself.
 // matrix_normal: view-space matrix for calculating normals.
 typedef struct DMirAffineInfo {
     uint32_t group;
-    DMirOctree* octree;
+    DMirGeometry* geometry;
     float matrix_normal[3*3];
 } DMirAffineInfo;
 
 // Framebufer's voxel buffer stores this data in each pixel:
 // affine_id: index in the array of affine_infos.
-// address: node index in the octree's data array.
+// address: voxel index in the geometry's data array.
 typedef struct DMirVoxelRef {
     DMirAffineID affine_id;
     DMirAddress address;
@@ -324,7 +292,7 @@ typedef struct DMirFramebuffer {
 // view will be rendered. Read-only (don't change it).
 // frustum: the camera frustum parameters (also "read-only").
 // split_factor: the fraction of framebuffer's max dimension
-// (width or height) above which octrees will be split into
+// (width or height) above which a geometry will be split into
 // separate subtrees that would be sorted by depth.
 // affine_distortion: the amount of distortion (in pixels)
 // below which a subtree is considered affine (non-deformed).
@@ -410,18 +378,18 @@ int dmir_pixel_index(DMirFramebuffer* framebuffer, int x, int y) {
 //      3.3. for each renderer of this batch:
 //           * dmir_renderer_draw(...)
 //   4. dmir_batcher_affine_get(...)
-//   5. Read the color data from the octrees (based on
-//      the affine_id and voxel address of each pixel)
+//   5. Read the color data (based on the affine_id
+//      and voxel address of each pixel)
 //      and write it to your texture or canvas.
 // * Cleanup: free framebuffer(s), batcher(s), renderer(s)
 
 // Some additional remarks regarding dmir_batcher_add:
-// it adds an instance of octree to the batch as 1 or more
+// it adds an instance of geometry to the batch as 1 or more
 // DMirAffineInfo entries (this depends on how deformed,
 // or non-affine, its cage is). The cage should be an array
 // of 8 triplets of (x,y,z) float coordinates, corresponding
 // to the cage's corner vertices. The "group" argument can be
-// useful if multiple octrees belong to one logical "object".
+// useful if multiple geometries belong to one logical "object".
 
 // The lookup tables can take quite a bit of space (~1.5 MB),
 // so in this library they are generated at runtime.
@@ -437,7 +405,7 @@ DMirBatcher* dmir_batcher_make(DMirLookups* lookups);
 void dmir_batcher_free(DMirBatcher* batcher);
 void dmir_batcher_reset(DMirBatcher* batcher, DMirRect viewport, DMirFrustum frustum);
 void dmir_batcher_add(DMirBatcher* batcher, DMirFramebuffer* framebuffer,
-    uint32_t group, float* cage, DMirOctree* octree, DMirAddress root, DMirEffects effects);
+    uint32_t group, float* cage, DMirGeometry* geometry, DMirAddress root, DMirEffects effects);
 void dmir_batcher_sort(DMirBatcher* batcher);
 void dmir_batcher_affine_get(DMirBatcher* batcher, DMirAffineInfo** affine_infos, uint32_t* count);
 

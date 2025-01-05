@@ -41,6 +41,50 @@
 template <typename T> using DPtr = std::unique_ptr<T>;
 template <typename T> using UPtr = std::unique_ptr<T, void(*)(T*)>;
 
+#define PTR_OFFSET(array, offset) ((typeof(array))(((char*)(array)) + (offset)))
+#define PTR_INDEX(array, index) PTR_OFFSET((array), ((index) * (array##_stride)))
+
+typedef struct DMirVoxelData {
+    void (*get)(void* data, DMirAddress address, void* out);
+    uint32_t data_count;
+    uint32_t item_size; // in bytes
+} DMirVoxelData;
+
+typedef struct DMirSimpleData {
+    DMirVoxelData api;
+    uint8_t* palette;
+    uint8_t* items;
+    uint32_t items_stride; // in bytes
+    uint32_t palette_count;
+} DMirSimpleData;
+
+// addr: address (index) of a node's first child.
+// mask: node's octant mask (zero mask indicates a leaf).
+// data: node's voxel data.
+// *_stride: offset (in bytes) between each item (this way,
+// addr/mask/data can be stored as separate arrays or as
+// one interleaved array).
+// count: number of nodes (used to check if node addresses
+// stay within array bounds; see DMIR_VALIDATE_ADDRESSES).
+// max_level: if >= 0, limits the depth of octree traversal.
+// is_packed: whether the octree nodes are packed (empty
+// children are not stored) or sparse (always 8 children).
+typedef struct DMirOctree {
+    DMirGeometry geometry;
+    DMirLookups* lookups;
+    DMirVoxelData* data;
+    uint32_t* addr;
+    uint8_t* mask;
+    uint32_t addr_stride;
+    uint32_t mask_stride;
+    uint32_t count;
+    DMirBool is_packed;
+} DMirOctree;
+
+// Enable this if you aren't sure that your octree(s)
+// contain valid node addresses everywhere
+#define DMIR_VALIDATE_ADDRESSES
+
 #ifndef RGFW_BUFFER
 UPtr<GLuint> MakeGLTexture() {
     GLuint handle;
@@ -50,9 +94,6 @@ UPtr<GLuint> MakeGLTexture() {
     });
 }
 #endif
-
-#define PTR_OFFSET(array, offset) ((typeof(array))(((char*)(array)) + (offset)))
-#define PTR_INDEX(array, index) PTR_OFFSET((array), ((index) * (array##_stride)))
 
 int64_t get_time_ms() {
     return RGFW_getTimeNS() / 1000000;
@@ -132,6 +173,17 @@ struct ProgramState {
     std::vector<int> accum_weights_exp;
 };
 
+void simple_data_get(void* data_ptr, DMirAddress address, void* out) {
+    DMirSimpleData* data = (DMirSimpleData*)data_ptr;
+    uint8_t* item = PTR_INDEX(data->items, address);
+    memcpy(out, item, data->api.item_size);
+}
+
+void simple_data_get_rgb(void* data_ptr, DMirAddress address, void* out) {
+    DMirSimpleData* data = (DMirSimpleData*)data_ptr;
+    uint8_t* item = PTR_INDEX(data->items, address);
+    ((RGB24*)out)[0] = ((RGB24*)item)[0];
+}
 
 DMirBool octree_traverse_start(void* geometry, uint64_t node_ref, uint64_t data_ref, DMirTraversal* dst) {
     DMirOctree* octree = (DMirOctree*)geometry;
@@ -220,13 +272,13 @@ static void read_file(std::string path, int* file_size, char** data) {
 }
 
 void delete_octree(DMirOctree* octree) {
+    delete (DMirSimpleData*)octree->data;
     delete octree->addr;
     delete octree;
 }
 
 UPtr<DMirOctree> create_octree(DMirLookups* lookups) {
     auto octree = UPtr<DMirOctree>(new DMirOctree(), delete_octree);
-    octree->max_level = -1;
     octree->is_packed = false;
     octree->count = 0;
     octree->addr = nullptr;
@@ -234,7 +286,6 @@ UPtr<DMirOctree> create_octree(DMirLookups* lookups) {
     octree->data = nullptr;
     octree->addr_stride = 0;
     octree->mask_stride = 0;
-    octree->data_stride = 0;
     octree->lookups = lookups;
     octree->geometry.traverse_start = octree_traverse_start;
     octree->geometry.traverse_next = octree_traverse_next;
@@ -254,16 +305,25 @@ UPtr<DMirOctree> load_octree(DMirLookups* lookups, std::string path, int mode) {
         return UPtr<DMirOctree>(nullptr, nullptr);
     }
     
+    auto voxel_count = file_size / node_size;
+    
+    auto voxel_data = new DMirSimpleData();
+    voxel_data->api.get = simple_data_get_rgb;
+    voxel_data->api.data_count = voxel_count;
+    voxel_data->api.item_size = 3;
+    voxel_data->items_stride = 8;
+    voxel_data->items = ((uint8_t*)file_data) + 5;
+    voxel_data->palette = nullptr;
+    voxel_data->palette_count = 0;
+    
     auto octree = create_octree(lookups);
-    octree->max_level = -1;
     octree->is_packed = false;
-    octree->count = file_size / node_size;
+    octree->count = voxel_count;
     octree->addr = (uint32_t*)file_data;
     octree->mask = ((uint8_t*)file_data) + 4;
-    octree->data = ((uint8_t*)file_data) + 5;
+    octree->data = (DMirVoxelData*)voxel_data;
     octree->addr_stride = 8;
     octree->mask_stride = 8;
-    octree->data_stride = 8;
     
     if (mode != OCTREE_LOAD_RAW) {
         char* new_data = new char[octree->count * (4 + 1 + 3)];
@@ -278,7 +338,7 @@ UPtr<DMirOctree> load_octree(DMirLookups* lookups, std::string path, int mode) {
             for (int index = 0; index < count; index++) {
                 auto node_address = *PTR_INDEX(octree->addr, addr[index]);
                 auto node_mask = *PTR_INDEX(octree->mask, addr[index]);
-                auto node_color = *((RGB24*)PTR_INDEX(octree->data, addr[index]));
+                auto node_color = *((RGB24*)PTR_INDEX(voxel_data->items, addr[index]));
                 addr[index] = count;
                 mask[index] = node_mask;
                 color[index] = node_color;
@@ -303,7 +363,7 @@ UPtr<DMirOctree> load_octree(DMirLookups* lookups, std::string path, int mode) {
             for (int i = 0; i < octree->count; i++) {
                 addr[i] = *PTR_INDEX(octree->addr, i);
                 mask[i] = *PTR_INDEX(octree->mask, i);
-                color[i] = *((RGB24*)PTR_INDEX(octree->data, i));
+                color[i] = *((RGB24*)PTR_INDEX(voxel_data->items, i));
             }
         }
         
@@ -311,10 +371,11 @@ UPtr<DMirOctree> load_octree(DMirLookups* lookups, std::string path, int mode) {
         
         octree->addr = addr;
         octree->mask = mask;
-        octree->data = (uint8_t*)color;
         octree->addr_stride = 4;
         octree->mask_stride = 1;
-        octree->data_stride = 3;
+        
+        voxel_data->items = (uint8_t*)color;
+        voxel_data->items_stride = 3;
     }
     
     return octree;
@@ -328,16 +389,25 @@ UPtr<DMirOctree> make_recursive_cube(DMirLookups* lookups, int r, int g, int b) 
         octree_data[node_index*2+1] = ((uint32_t*)mask_color)[0];
     }
     
+    auto voxel_count = 8;
+    
+    auto voxel_data = new DMirSimpleData();
+    voxel_data->api.get = simple_data_get_rgb;
+    voxel_data->api.data_count = voxel_count;
+    voxel_data->api.item_size = 3;
+    voxel_data->items_stride = 8;
+    voxel_data->items = ((uint8_t*)octree_data) + 5;
+    voxel_data->palette = nullptr;
+    voxel_data->palette_count = 0;
+    
     auto octree = create_octree(lookups);
-    octree->max_level = -1;
     octree->is_packed = false;
-    octree->count = 8;
+    octree->count = voxel_count;
     octree->addr = octree_data;
     octree->mask = ((uint8_t*)octree_data) + 4;
-    octree->data = ((uint8_t*)octree_data) + 5;
+    octree->data = (DMirVoxelData*)voxel_data;
     octree->addr_stride = 8;
     octree->mask_stride = 8;
-    octree->data_stride = 8;
     return octree;
 }
 
@@ -444,7 +514,7 @@ void render_scene_subset(ProgramState& state, struct mat4 proj_matrix, int imin,
             int group = index;
             auto octree = state.octrees[object3d->geometry_id].get();
             dmir_batcher_add(batcher, framebuffer,
-                group, (float*)cage, octree, object3d->root, effects);
+                group, (float*)cage, &octree->geometry, object3d->root, effects);
         }
     }
     
@@ -610,9 +680,8 @@ void render_scene_to_buffer(ProgramState& state, RGBA32* pixels, int stride) {
                     color = {.r = 0, .g = 196, .b = 255};
                 } else {
                     auto affine_info = &affine_infos[voxels_row[x].affine_id];
-                    auto octree = affine_info->octree;
-                    uint8_t* data_ptr = PTR_INDEX(octree->data, voxels_row[x].address);
-                    color = *((RGB24*)data_ptr);
+                    auto octree = (DMirOctree*)affine_info->geometry;
+                    octree->data->get(octree->data, voxels_row[x].address, &color);
                 }
             }
             
