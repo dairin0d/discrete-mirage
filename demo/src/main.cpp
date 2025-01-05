@@ -341,32 +341,32 @@ UPtr<DMirOctree> make_recursive_cube(DMirLookups* lookups, int r, int g, int b) 
     return octree;
 }
 
-struct mat4 calculate_projection_matrix(ProgramState* state) {
+struct mat4 calculate_projection_matrix(ProgramState& state) {
     const float zoom_factor = 0.125f;
-    float zoom_scale = pow(2.0f, -state->cam_zoom * zoom_factor);
-    float zoom_scale_fov = pow(2.0f, -state->cam_zoom_fov * zoom_factor);
+    float zoom_scale = pow(2.0f, -state.cam_zoom * zoom_factor);
+    float zoom_scale_fov = pow(2.0f, -state.cam_zoom_fov * zoom_factor);
     
     float distance_persp = zoom_scale * zoom_scale_fov;
-    float distance_ortho = (state->frustum.max_depth - state->frustum.min_depth) * 0.5f;
-    state->frustum.focal_depth = lerp(distance_ortho, distance_persp, state->frustum.perspective);
-    state->frustum.focal_extent = zoom_scale;
+    float distance_ortho = (state.frustum.max_depth - state.frustum.min_depth) * 0.5f;
+    state.frustum.focal_depth = lerp(distance_ortho, distance_persp, state.frustum.perspective);
+    state.frustum.focal_extent = zoom_scale;
     
-    auto view_matrix = trs_matrix(state->cam_pos, state->cam_rot, state->cam_scl);
+    auto view_matrix = trs_matrix(state.cam_pos, state.cam_rot, state.cam_scl);
     auto view_z_axis = get_matrix_vec3(&view_matrix, 2);
-    auto offset_axis = svec3_multiply_f(view_z_axis, -state->frustum.focal_depth);
+    auto offset_axis = svec3_multiply_f(view_z_axis, -state.frustum.focal_depth);
     psmat4_translate(&view_matrix, &view_matrix, &offset_axis);
     
     return smat4_inverse(view_matrix);
 }
 
-void create_scene(ProgramState* state, std::string model_path) {
-    auto lookups = state->dmir_lookups.get();
+void create_scene(ProgramState& state, std::string model_path) {
+    auto lookups = state.dmir_lookups.get();
     
     int main_geometry_id = -1;
     auto file_octree = load_octree(lookups, model_path, octree_load_mode);
     if (file_octree) {
         main_geometry_id = 0;
-        state->octrees.push_back(std::move(file_octree));
+        state.octrees.push_back(std::move(file_octree));
     }
     
     const float grid_offset = 1.2f;
@@ -375,9 +375,9 @@ void create_scene(ProgramState* state, std::string model_path) {
         for (int gx = grid_extent; gx >= -grid_extent; gx--) {
             auto geometry_id = main_geometry_id;
             if (geometry_id < 0) {
-                geometry_id = state->octrees.size();
+                geometry_id = state.octrees.size();
                 auto octree = make_recursive_cube(lookups, 128+gx*32, 255, 128+gz*32);
-                state->octrees.push_back(std::move(octree));
+                state.octrees.push_back(std::move(octree));
             }
             
             auto object3d = new Object3D();
@@ -393,7 +393,7 @@ void create_scene(ProgramState* state, std::string model_path) {
                 object3d->cage[octant].y = (((octant >> 1) & 1) * 2) - 1;
                 object3d->cage[octant].z = (((octant >> 2) & 1) * 2) - 1;
             }
-            state->objects.push_back(DPtr<Object3D>(object3d));
+            state.objects.push_back(DPtr<Object3D>(object3d));
             
             // if ((gx == 0) & (gz == 0)) {
             //     for (int octant = 0; octant < 8; octant++) {
@@ -414,17 +414,17 @@ void create_scene(ProgramState* state, std::string model_path) {
     }
 }
 
-void render_scene_subset(ProgramState* state, struct mat4 proj_matrix, int imin, int imax) {
+void render_scene_subset(ProgramState& state, struct mat4 proj_matrix, int imin, int imax) {
     struct vec3 cage[8];
     
-    auto batcher = state->dmir_batcher.get();
-    auto framebuffer = state->dmir_framebuffer.get();
+    auto batcher = state.dmir_batcher.get();
+    auto framebuffer = state.dmir_framebuffer.get();
     
     if (imin < 0) imin = 0;
-    if (imax >= state->objects.size()) imax = state->objects.size() - 1;
+    if (imax >= state.objects.size()) imax = state.objects.size() - 1;
     
     for (int index = imin; index <= imax; index++) {
-        auto object3d = state->objects[index].get();
+        auto object3d = state.objects[index].get();
         if (object3d->hide) continue;
         
         auto matrix = trs_matrix(object3d->position, object3d->rotation, object3d->scale);
@@ -435,14 +435,14 @@ void render_scene_subset(ProgramState* state, struct mat4 proj_matrix, int imin,
         }
         
         DMirEffects effects = object3d->effects;
-        if ((effects.max_level < 0) || (effects.max_level > state->max_level)) {
-            effects.max_level = state->max_level;
+        if ((effects.max_level < 0) || (effects.max_level > state.max_level)) {
+            effects.max_level = state.max_level;
         }
-        effects.shape = state->splat_shape;
+        effects.shape = state.splat_shape;
         
         if (object3d->geometry_id >= 0) {
             int group = index;
-            auto octree = state->octrees[object3d->geometry_id].get();
+            auto octree = state.octrees[object3d->geometry_id].get();
             dmir_batcher_add(batcher, framebuffer,
                 group, (float*)cage, octree, object3d->root, effects);
         }
@@ -450,8 +450,8 @@ void render_scene_subset(ProgramState* state, struct mat4 proj_matrix, int imin,
     
     dmir_batcher_sort(batcher);
     
-    if (state->thread_count == 1) {
-        dmir_renderer_draw(state->dmir_renderers[0].get());
+    if (state.thread_count == 1) {
+        dmir_renderer_draw(state.dmir_renderers[0].get());
     } else {
         // This naive approach has a notable overhead
         // (it only becomes faster than single-threaded
@@ -462,8 +462,8 @@ void render_scene_subset(ProgramState* state, struct mat4 proj_matrix, int imin,
         // be better, but that's not in standard library.
         
         std::vector<std::thread> threads;
-        for (int i = 0; i < state->thread_count; i++) {
-            threads.emplace_back(dmir_renderer_draw, state->dmir_renderers[i].get());
+        for (int i = 0; i < state.thread_count; i++) {
+            threads.emplace_back(dmir_renderer_draw, state.dmir_renderers[i].get());
         }
         
         for (auto& thread : threads) {
@@ -472,29 +472,29 @@ void render_scene_subset(ProgramState* state, struct mat4 proj_matrix, int imin,
     }
 }
 
-void calculate_parts(ProgramState* state, int &parts_x, int &parts_y) {
-    if (state->thread_case <= 0) {
+void calculate_parts(ProgramState& state, int &parts_x, int &parts_y) {
+    if (state.thread_case <= 0) {
         parts_x = 1;
         parts_y = 1;
-    } else if (state->thread_case <= 1) {
+    } else if (state.thread_case <= 1) {
         parts_x = 2;
         parts_y = 1;
-    } else if (state->thread_case <= 2) {
+    } else if (state.thread_case <= 2) {
         parts_x = 3;
         parts_y = 1;
-    } else if (state->thread_case <= 3) {
+    } else if (state.thread_case <= 3) {
         parts_x = 2;
         parts_y = 2;
-    } else if (state->thread_case <= 4) {
+    } else if (state.thread_case <= 4) {
         parts_x = 3;
         parts_y = 2;
-    } else if (state->thread_case <= 5) {
+    } else if (state.thread_case <= 5) {
         parts_x = 4;
         parts_y = 2;
-    } else if (state->thread_case <= 6) {
+    } else if (state.thread_case <= 6) {
         parts_x = 3;
         parts_y = 3;
-    } else if (state->thread_case <= 7) {
+    } else if (state.thread_case <= 7) {
         parts_x = 4;
         parts_y = 3;
     } else {
@@ -503,15 +503,15 @@ void calculate_parts(ProgramState* state, int &parts_x, int &parts_y) {
     }
 }
 
-void setup_renderers(ProgramState* state) {
+void setup_renderers(ProgramState& state) {
     int parts_x = 1;
     int parts_y = 1;
     calculate_parts(state, parts_x, parts_y);
     
-    state->thread_count = parts_x * parts_y;
+    state.thread_count = parts_x * parts_y;
     
-    auto batcher = state->dmir_batcher.get();
-    auto framebuffer = state->dmir_framebuffer.get();
+    auto batcher = state.dmir_batcher.get();
+    auto framebuffer = state.dmir_framebuffer.get();
     
     int tiles_x = (framebuffer->size_x + framebuffer->stencil_size_x - 1) / framebuffer->stencil_size_x;
     int tiles_y = (framebuffer->size_y + framebuffer->stencil_size_y - 1) / framebuffer->stencil_size_y;
@@ -525,7 +525,7 @@ void setup_renderers(ProgramState* state) {
             int end_x = ((tiles_x * px) / parts_x) * framebuffer->stencil_size_x;
             if (end_x > framebuffer->size_x) end_x = framebuffer->size_x;
             
-            auto renderer = state->dmir_renderers[index].get();
+            auto renderer = state.dmir_renderers[index].get();
             renderer->framebuffer = framebuffer;
             renderer->batcher = batcher;
             renderer->rect = {
@@ -543,14 +543,14 @@ void setup_renderers(ProgramState* state) {
     }
 }
 
-void render_scene_to_buffer(ProgramState* state, RGBA32* pixels, int stride) {
-    auto batcher = state->dmir_batcher.get();
-    auto framebuffer = state->dmir_framebuffer.get();
+void render_scene_to_buffer(ProgramState& state, RGBA32* pixels, int stride) {
+    auto batcher = state.dmir_batcher.get();
+    auto framebuffer = state.dmir_framebuffer.get();
     
-    if (state->use_accumulation) {
-        auto accum_offset = state->accum_offsets[state->accum_index];
-        state->frustum.offset_x = accum_offset.x;
-        state->frustum.offset_y = accum_offset.y;
+    if (state.use_accumulation) {
+        auto accum_offset = state.accum_offsets[state.accum_index];
+        state.frustum.offset_x = accum_offset.x;
+        state.frustum.offset_y = accum_offset.y;
     }
     
     auto proj_matrix = calculate_projection_matrix(state);
@@ -559,49 +559,49 @@ void render_scene_to_buffer(ProgramState* state, RGBA32* pixels, int stride) {
     
     dmir_framebuffer_clear(framebuffer);
     
-    dmir_batcher_reset(batcher, state->viewport, state->frustum);
+    dmir_batcher_reset(batcher, state.viewport, state.frustum);
     
-    render_scene_subset(state, proj_matrix, 0, state->objects.size()-1);
+    render_scene_subset(state, proj_matrix, 0, state.objects.size()-1);
     
     DMirAffineInfo* affine_infos;
     uint32_t affine_count;
     dmir_batcher_affine_get(batcher, &affine_infos, &affine_count);
     
-    int accum_bias = (1 << state->accum_shift) >> 1;
+    int accum_bias = (1 << state.accum_shift) >> 1;
     auto rows_start = std::vector<RGB24*>{};
-    rows_start.reserve(state->accum_count);
+    rows_start.reserve(state.accum_count);
     auto rows_y = std::vector<RGB24*>{};
-    rows_y.reserve(state->accum_count);
-    for (int j = 0; j < state->accum_count; j++) {
-        int buf_index = (state->accum_index - j + state->accum_count) % state->accum_count;
-        auto accum_buf = state->accum_buffers[buf_index].data();
+    rows_y.reserve(state.accum_count);
+    for (int j = 0; j < state.accum_count; j++) {
+        int buf_index = (state.accum_index - j + state.accum_count) % state.accum_count;
+        auto accum_buf = state.accum_buffers[buf_index].data();
         rows_start.push_back(accum_buf);
         rows_y.push_back(accum_buf);
     }
     
-    auto accum_weights_lin = state->accum_weights_lin.data();
-    auto accum_weights_exp = state->accum_weights_exp.data();
+    auto accum_weights_lin = state.accum_weights_lin.data();
+    auto accum_weights_exp = state.accum_weights_exp.data();
     
     int buf_stride = dmir_row_size(framebuffer);
-    for (int y = 0; y < state->screen_height; y++) {
+    for (int y = 0; y < state.screen_height; y++) {
         RGBA32* pixels_row = pixels + y * stride;
         
         int buf_row = y * buf_stride;
         DMirDepth* depths_row = framebuffer->depth + buf_row;
         DMirVoxelRef* voxels_row = framebuffer->voxel + buf_row;
         
-        for (int j = 0; j < state->accum_count; j++) {
-            rows_y[j] = rows_start[j] + (y * state->screen_width);
+        for (int j = 0; j < state.accum_count; j++) {
+            rows_y[j] = rows_start[j] + (y * state.screen_width);
         }
         auto rows = rows_y.data();
         
-        for (int x = 0; x < state->screen_width; x++) {
+        for (int x = 0; x < state.screen_width; x++) {
             RGB24 color;
-            if (state->is_depth_mode) {
+            if (state.is_depth_mode) {
                 #ifdef DMIR_DEPTH_INT32
                 color.g = depths_row[x] >> 18;
                 #else
-                color.g = (int)(8 * 255 * depths_row[x] / state->frustum.max_depth);
+                color.g = (int)(8 * 255 * depths_row[x] / state.frustum.max_depth);
                 #endif
                 color.r = color.g;
                 color.b = color.g;
@@ -616,7 +616,7 @@ void render_scene_to_buffer(ProgramState* state, RGBA32* pixels, int stride) {
                 }
             }
             
-            if (state->use_accumulation) {
+            if (state.use_accumulation) {
                 int dr = color.r - rows[0][x].r;
                 int dg = color.g - rows[0][x].g;
                 int db = color.b - rows[0][x].b;
@@ -627,15 +627,15 @@ void render_scene_to_buffer(ProgramState* state, RGBA32* pixels, int stride) {
                 dr = accum_bias;
                 dg = accum_bias;
                 db = accum_bias;
-                for (int j = 0; j < state->accum_count; j++) {
+                for (int j = 0; j < state.accum_count; j++) {
                     dr += rows[j][x].r * weights[j];
                     dg += rows[j][x].g * weights[j];
                     db += rows[j][x].b * weights[j];
                 }
                 
-                pixels_row[x].r = dr >> state->accum_shift;
-                pixels_row[x].g = dg >> state->accum_shift;
-                pixels_row[x].b = db >> state->accum_shift;
+                pixels_row[x].r = dr >> state.accum_shift;
+                pixels_row[x].g = dg >> state.accum_shift;
+                pixels_row[x].b = db >> state.accum_shift;
                 pixels_row[x].a = 255;
             } else {
                 pixels_row[x].r = color.r;
@@ -646,45 +646,45 @@ void render_scene_to_buffer(ProgramState* state, RGBA32* pixels, int stride) {
         }
     }
     
-    state->accum_index = (state->accum_index + 1) % state->accum_buffers.size();
+    state.accum_index = (state.accum_index + 1) % state.accum_buffers.size();
 }
 
-int64_t render_scene(ProgramState* state) {
+int64_t render_scene(ProgramState& state) {
     auto time = get_time_ms();
     
-    RGBA32* pixels = state->render_buffer.data();
-    render_scene_to_buffer(state, pixels, state->screen_width);
+    RGBA32* pixels = state.render_buffer.data();
+    render_scene_to_buffer(state, pixels, state.screen_width);
     
     #ifdef RGFW_BUFFER
     const int shift = 16;
-    int win_w = state->window->r.w;
-    int win_h = state->window->r.h;
+    int win_w = state.window->r.w;
+    int win_h = state.window->r.h;
     if (win_w < 1) win_w = 1;
     if (win_h < 1) win_h = 1;
     if (win_w > RGFW_bufferSize.w) win_w = RGFW_bufferSize.w;
     if (win_h > RGFW_bufferSize.h) win_h = RGFW_bufferSize.h;
     
-    int scale_x = ((1 << shift) * state->screen_width) / win_w;
+    int scale_x = ((1 << shift) * state.screen_width) / win_w;
     int offset_x = scale_x >> 1;
-    int scale_y = ((1 << shift) * state->screen_height) / win_h;
+    int scale_y = ((1 << shift) * state.screen_height) / win_h;
     int offset_y = scale_y >> 1;
     
-    RGBA32* window_pixels = (RGBA32*)state->window->buffer;
+    RGBA32* window_pixels = (RGBA32*)state.window->buffer;
     for (int win_y = 0; win_y < win_h; win_y++) {
         int rev_y = (win_h - 1) - win_y;
         int y = (rev_y * scale_y + offset_y) >> shift;
         RGBA32* win_row = window_pixels + win_y * RGFW_bufferSize.w;
-        RGBA32* pix_row = pixels + y * state->screen_width;
+        RGBA32* pix_row = pixels + y * state.screen_width;
         for (int win_x = 0; win_x < win_w; win_x++) {
             int x = (win_x * scale_x + offset_x) >> shift;
             win_row[win_x] = pix_row[x];
         }
     }
     #else
-    glBindTexture(GL_TEXTURE_2D, *state->gl_texture.get());
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, state->screen_width, state->screen_height, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    glBindTexture(GL_TEXTURE_2D, *state.gl_texture.get());
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, state.screen_width, state.screen_height, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
     
-    glViewport(0, 0, state->window->r.w, state->window->r.h);
+    glViewport(0, 0, state.window->r.w, state.window->r.h);
     
     glClear(GL_COLOR_BUFFER_BIT);
     
@@ -734,8 +734,8 @@ void make_accum_weights(std::vector<int>& out, int count, float base, int denomi
     out.insert(out.end(), &iweights[0], &iweights[count]);
 }
 
-void print_stats(ProgramState* state) {
-    auto stats = state->dmir_framebuffer->stats;
+void print_stats(ProgramState& state) {
+    auto stats = state.dmir_framebuffer->stats;
     std::cout
         << stats[DMIR_NODES_BATCHED] << " batched; "
         << stats[DMIR_NODES_CAGE] << " cages; "
@@ -752,107 +752,107 @@ void print_stats(ProgramState* state) {
         << std::endl;
 }
 
-void print_state_info(ProgramState* state) {
+void print_state_info(ProgramState& state) {
     std::cout
-        << "x: " << state->cam_pos.x << ", "
-        << "y: " << state->cam_pos.y << ", "
-        << "z: " << state->cam_pos.z << ", "
-        << "rx: " << state->cam_rot.x << ", "
-        << "ry: " << state->cam_rot.y << ", "
-        << "zoom: " << state->cam_zoom << ", "
-        << "fov: " << state->cam_zoom_fov << ", "
-        << "persp: " << state->frustum.perspective
+        << "x: " << state.cam_pos.x << ", "
+        << "y: " << state.cam_pos.y << ", "
+        << "z: " << state.cam_pos.z << ", "
+        << "rx: " << state.cam_rot.x << ", "
+        << "ry: " << state.cam_rot.y << ", "
+        << "zoom: " << state.cam_zoom << ", "
+        << "fov: " << state.cam_zoom_fov << ", "
+        << "persp: " << state.frustum.perspective
         << std::endl;
 }
 
-void process_event(ProgramState* state) {
+void process_event(ProgramState& state) {
     bool cam_updated = false;
     
-    auto window = state->window.get();
+    auto window = state.window.get();
     auto event = &window->event;
     
     if (event->type == RGFW_quit) {
-        state->is_running = false;
+        state.is_running = false;
     } else if (event->type == RGFW_keyPressed) {
         switch (event->key) {
         case RGFW_Escape:
-            state->is_running = false;
+            state.is_running = false;
             break;
         case RGFW_Space:
-            state->frustum.perspective = (state->frustum.perspective > 0.5f ? 0 : 1);
+            state.frustum.perspective = (state.frustum.perspective > 0.5f ? 0 : 1);
             cam_updated = true;
             break;
         case RGFW_Comma:
-            state->cam_zoom_fov -= 1;
+            state.cam_zoom_fov -= 1;
             cam_updated = true;
             break;
         case RGFW_Period:
-            state->cam_zoom_fov += 1;
+            state.cam_zoom_fov += 1;
             cam_updated = true;
             break;
         case RGFW_Bracket:
-            state->thread_case -= 1;
-            if (state->thread_case < 0) state->thread_case = 0;
+            state.thread_case -= 1;
+            if (state.thread_case < 0) state.thread_case = 0;
             break;
         case RGFW_CloseBracket:
-            state->thread_case += 1;
-            if (state->thread_case > 8) state->thread_case = 8;
+            state.thread_case += 1;
+            if (state.thread_case > 8) state.thread_case = 8;
             break;
         case RGFW_Minus:
-            state->max_level -= 1;
-            if (state->max_level < -1) state->max_level = 16;
+            state.max_level -= 1;
+            if (state.max_level < -1) state.max_level = 16;
             break;
         case RGFW_Equals:
-            state->max_level += 1;
-            if (state->max_level > 16) state->max_level = -1;
+            state.max_level += 1;
+            if (state.max_level > 16) state.max_level = -1;
             break;
         case RGFW_Tab:
-            state->is_depth_mode = !state->is_depth_mode;
+            state.is_depth_mode = !state.is_depth_mode;
             break;
         case RGFW_F1:
-            state->splat_shape = DMIR_SHAPE_POINT;
+            state.splat_shape = DMIR_SHAPE_POINT;
             break;
         case RGFW_F2:
-            state->splat_shape = DMIR_SHAPE_RECT;
+            state.splat_shape = DMIR_SHAPE_RECT;
             break;
         case RGFW_F3:
-            state->splat_shape = DMIR_SHAPE_SQUARE;
+            state.splat_shape = DMIR_SHAPE_SQUARE;
             break;
         case RGFW_F4:
-            state->splat_shape = DMIR_SHAPE_CIRCLE;
+            state.splat_shape = DMIR_SHAPE_CIRCLE;
             break;
         case RGFW_F5:
-            state->splat_shape = DMIR_SHAPE_CUBE;
+            state.splat_shape = DMIR_SHAPE_CUBE;
             break;
         case RGFW_F12:
-            state->use_accumulation = !state->use_accumulation;
+            state.use_accumulation = !state.use_accumulation;
             break;
         }
     } else if (event->type == RGFW_mouseButtonPressed) {
         if (event->button == RGFW_mouseLeft) {
-            state->is_cam_orbiting = true;
-            state->last_mouse_x = event->point.x;
-            state->last_mouse_y = event->point.y;
+            state.is_cam_orbiting = true;
+            state.last_mouse_x = event->point.x;
+            state.last_mouse_y = event->point.y;
             RGFW_window_mouseHold(window, RGFW_AREA(window->r.w, window->r.h));
             RGFW_window_showMouse(window, RGFW_FALSE);
         } else if ((event->button == RGFW_mouseScrollDown) || (event->button == RGFW_mouseScrollUp)) {
-            state->cam_zoom += event->scroll;
+            state.cam_zoom += event->scroll;
             cam_updated = true;
         }
     } else if (event->type == RGFW_mouseButtonReleased) {
         if (event->button == RGFW_mouseLeft) {
-            state->is_cam_orbiting = false;
+            state.is_cam_orbiting = false;
             RGFW_window_showMouse(window, RGFW_TRUE);
             RGFW_window_mouseUnhold(window);
-            int restored_x = window->r.x + state->last_mouse_x;
-            int restored_y = window->r.y + state->last_mouse_y;
+            int restored_x = window->r.x + state.last_mouse_x;
+            int restored_y = window->r.y + state.last_mouse_y;
             RGFW_window_moveMouse(window, RGFW_POINT(restored_x, restored_y));
         }
     } else if (event->type == RGFW_mousePosChanged) {
-        if (state->is_cam_orbiting) {
+        if (state.is_cam_orbiting) {
             // In "mouse hold" mode, point contains delta rather than absolute position
-            state->cam_rot.y += event->point.x * 0.005f;
-            state->cam_rot.x += event->point.y * 0.005f;
+            state.cam_rot.y += event->point.x * 0.005f;
+            state.cam_rot.x += event->point.y * 0.005f;
             cam_updated = true;
         }
     }
@@ -860,10 +860,10 @@ void process_event(ProgramState* state) {
     if (cam_updated) print_state_info(state);
 }
 
-void process_continuous_events(ProgramState* state) {
-    auto window = state->window.get();
+void process_continuous_events(ProgramState& state) {
+    auto window = state.window.get();
     
-    auto view_matrix = trs_matrix(state->cam_pos, state->cam_rot, svec3_one());
+    auto view_matrix = trs_matrix(state.cam_pos, state.cam_rot, svec3_one());
     auto view_x_axis = get_matrix_vec3(&view_matrix, 0);
     auto view_y_axis = get_matrix_vec3(&view_matrix, 1);
     auto view_z_axis = get_matrix_vec3(&view_matrix, 2);
@@ -882,35 +882,35 @@ void process_continuous_events(ProgramState* state) {
     
     bool cam_updated = false;
     if (RGFW_isPressed(window, RGFW_d)) {
-        state->cam_pos = svec3_add(state->cam_pos, svec3_multiply_f(view_x_axis, speed));
+        state.cam_pos = svec3_add(state.cam_pos, svec3_multiply_f(view_x_axis, speed));
         cam_updated = true;
     }
     if (RGFW_isPressed(window, RGFW_a)) {
-        state->cam_pos = svec3_add(state->cam_pos, svec3_multiply_f(view_x_axis, -speed));
+        state.cam_pos = svec3_add(state.cam_pos, svec3_multiply_f(view_x_axis, -speed));
         cam_updated = true;
     }
     if (RGFW_isPressed(window, RGFW_r)) {
-        state->cam_pos = svec3_add(state->cam_pos, svec3_multiply_f(view_y_axis, speed));
+        state.cam_pos = svec3_add(state.cam_pos, svec3_multiply_f(view_y_axis, speed));
         cam_updated = true;
     }
     if (RGFW_isPressed(window, RGFW_f)) {
-        state->cam_pos = svec3_add(state->cam_pos, svec3_multiply_f(view_y_axis, -speed));
+        state.cam_pos = svec3_add(state.cam_pos, svec3_multiply_f(view_y_axis, -speed));
         cam_updated = true;
     }
     if (RGFW_isPressed(window, RGFW_w)) {
-        state->cam_pos = svec3_add(state->cam_pos, svec3_multiply_f(view_z_axis, speed));
+        state.cam_pos = svec3_add(state.cam_pos, svec3_multiply_f(view_z_axis, speed));
         cam_updated = true;
     }
     if (RGFW_isPressed(window, RGFW_s)) {
-        state->cam_pos = svec3_add(state->cam_pos, svec3_multiply_f(view_z_axis, -speed));
+        state.cam_pos = svec3_add(state.cam_pos, svec3_multiply_f(view_z_axis, -speed));
         cam_updated = true;
     }
     
     if (cam_updated) print_state_info(state);
 }
 
-void process_events(ProgramState* state) {
-    auto window = state->window.get();
+void process_events(ProgramState& state) {
+    auto window = state.window.get();
     
     while (RGFW_window_checkEvent(window)) {
         process_event(state);
@@ -937,9 +937,9 @@ void main_loop(ProgramState& state) {
     std::string frame_time_ms = "? ms";
     
     while (state.is_running && !RGFW_window_shouldClose(window)) {
-        process_events(&state);
+        process_events(state);
         
-        accum_time += render_scene(&state);
+        accum_time += render_scene(state);
         accum_count++;
         
         // print_stats(&state);
@@ -1069,7 +1069,7 @@ int main(int argc, char* argv[]) {
         model_path = argv[1];
     }
     
-    create_scene(&state, model_path);
+    create_scene(state, model_path);
     
     main_loop(state);
     
