@@ -143,6 +143,59 @@ typedef float DMirDepth;
 const float DMIR_MAX_DEPTH = INFINITY;
 #endif
 
+typedef uint64_t DMirAddress;
+
+typedef int32_t DMirAffineID;
+
+// Axis traversal orders. Declared as #define instead
+// of const to be usable in a switch statement
+#define DMIR_XYZ 0
+#define DMIR_XZY 1
+#define DMIR_YXZ 2
+#define DMIR_YZX 3
+#define DMIR_ZXY 4
+#define DMIR_ZYX 5
+
+typedef struct DMirQueue {
+    uint32_t octants;
+    uint32_t indices;
+} DMirQueue;
+
+// Precomputed lookup tables for each possible combination
+// of node child mask and traversal order / mirroring.
+// The counts[] and flips[] tables contain plain values
+// (number of set bits and mirrored mask, respectively),
+// but the rest pack either "maps" (octants[], indices[])
+// or "queues" (sparse[], packed[]) of 4-bit blocks.
+// For example, a queue of 4, 1, 3 would look like this:
+// 0000 0000 0000 0000 0000 1011 1001 1100
+// A map {1:0, 3:7, 6:2} would look like this:
+// 0000 1010 0000 0000 1111 0000 1000 0000
+typedef struct DMirLookups {
+    uint8_t* counts; // [mask] -> bit count
+    uint32_t* octants; // [mask] -> index to octant
+    uint32_t* indices; // [mask] -> octant to index
+    DMirQueue* sparse; // [(order << 8) | mask] -> octants & indices
+    DMirQueue* packed; // [(order << 8) | mask] -> octants & indices
+    uint8_t* flips; // [(flip << 8) | mask] -> flipped mask
+} DMirLookups;
+
+// Holds information about the (sub)nodes at a given
+// traversal level.
+typedef struct DMirTraversal {
+    uint8_t mask[8];
+    uint64_t node[8];
+    uint64_t data[8];
+} DMirTraversal;
+
+// The "base class" of traversable structures (octrees,
+// DAGs, etc.); implementations of the corresponding
+// structs must have it as the first field.
+typedef struct DMirGeometry {
+    DMirBool (*traverse_start)(void* geometry, DMirAddress node_ref, DMirAddress data_ref, DMirTraversal* dst);
+    DMirBool (*traverse_next)(void* geometry, DMirTraversal* src, int32_t index, DMirTraversal* dst);
+} DMirGeometry;
+
 // Note: values are treated as inclusive [min, max] range
 typedef struct DMirRect {
     int32_t min_x;
@@ -183,6 +236,8 @@ typedef struct DMirFrustum {
 // is_packed: whether the octree nodes are packed (empty
 // children are not stored) or sparse (always 8 children).
 typedef struct DMirOctree {
+    DMirGeometry geometry;
+    DMirLookups* lookups;
     uint32_t* addr;
     uint8_t* mask;
     uint8_t* data;
@@ -223,8 +278,8 @@ typedef struct DMirAffineInfo {
 // affine_id: index in the array of affine_infos.
 // address: node index in the octree's data array.
 typedef struct DMirVoxelRef {
-    int32_t affine_id;
-    uint32_t address;
+    DMirAffineID affine_id;
+    DMirAddress address;
 } DMirVoxelRef;
 
 // An enumeration of diagnostic stats for a framebuffer
@@ -321,38 +376,6 @@ const struct DMirFrustum DMIR_FRUSTUM_DEFAULT = {
     .offset_y = 0,
 };
 
-// Axis traversal orders
-const int32_t DMIR_XYZ = 0;
-const int32_t DMIR_XZY = 1;
-const int32_t DMIR_YXZ = 2;
-const int32_t DMIR_YZX = 3;
-const int32_t DMIR_ZXY = 4;
-const int32_t DMIR_ZYX = 5;
-
-typedef struct DMirQueue {
-    uint32_t octants;
-    uint32_t indices;
-} DMirQueue;
-
-// Precomputed lookup tables for each possible combination
-// of node child mask and traversal order / mirroring.
-// The counts[] and flips[] tables contain plain values
-// (number of set bits and mirrored mask, respectively),
-// but the rest pack either "maps" (octants[], indices[])
-// or "queues" (sparse[], packed[]) of 4-bit blocks.
-// For example, a queue of 4, 1, 3 would look like this:
-// 0000 0000 0000 0000 0000 1011 1001 1100
-// A map {1:0, 3:7, 6:2} would look like this:
-// 0000 1010 0000 0000 1111 0000 1000 0000
-typedef struct DMirLookups {
-    uint8_t* counts; // [mask] -> bit count
-    uint32_t* octants; // [mask] -> index to octant
-    uint32_t* indices; // [mask] -> octant to index
-    DMirQueue* sparse; // [(order << 8) | mask] -> octants & indices
-    DMirQueue* packed; // [(order << 8) | mask] -> octants & indices
-    uint8_t* flips; // [(flip << 8) | mask] -> flipped mask
-} DMirLookups;
-
 // ===================================================== //
 
 #ifdef DMIR_ROW_POW2
@@ -414,7 +437,7 @@ DMirBatcher* dmir_batcher_make(DMirLookups* lookups);
 void dmir_batcher_free(DMirBatcher* batcher);
 void dmir_batcher_reset(DMirBatcher* batcher, DMirRect viewport, DMirFrustum frustum);
 void dmir_batcher_add(DMirBatcher* batcher, DMirFramebuffer* framebuffer,
-    uint32_t group, float* cage, DMirOctree* octree, uint32_t root, DMirEffects effects);
+    uint32_t group, float* cage, DMirOctree* octree, DMirAddress root, DMirEffects effects);
 void dmir_batcher_sort(DMirBatcher* batcher);
 void dmir_batcher_affine_get(DMirBatcher* batcher, DMirAffineInfo** affine_infos, uint32_t* count);
 

@@ -116,6 +116,60 @@ struct ProgramState {
     int* accum_weights_exp;
 };
 
+
+DMirBool octree_traverse_start(void* geometry, uint64_t node_ref, uint64_t data_ref, DMirTraversal* dst) {
+    DMirOctree* octree = (DMirOctree*)geometry;
+    
+    #ifdef DMIR_VALIDATE_ADDRESSES
+    if (node_ref >= octree->count) return false;
+    #endif
+    
+    dst->mask[0] = *PTR_INDEX(octree->mask, node_ref);
+    // dst->node[0] = *PTR_INDEX(octree->addr, node_ref);
+    dst->node[0] = node_ref;
+    dst->data[0] = node_ref;
+    
+    return true;
+}
+
+DMirBool octree_traverse_next(void* geometry, DMirTraversal* src, int32_t index, DMirTraversal* dst) {
+    DMirOctree* octree = (DMirOctree*)geometry;
+    
+    uint8_t mask = src->mask[index];
+    // uint64_t node = src->node[index];
+    uint64_t node = *PTR_INDEX(octree->addr, src->node[index]);
+    
+    if (octree->is_packed) {
+        for (int octant = 0; octant < 8; octant++) {
+            if (mask & (1 << octant)) {
+                #ifdef DMIR_VALIDATE_ADDRESSES
+                if (node >= octree->count) return false;
+                #endif
+                dst->mask[octant] = *PTR_INDEX(octree->mask, node);
+                // dst->node[octant] = *PTR_INDEX(octree->addr, node);
+                dst->node[octant] = node;
+                dst->data[octant] = node;
+                node++;
+            }
+        }
+    } else {
+        for (int octant = 0; octant < 8; octant++) {
+            if (mask & (1 << octant)) {
+                #ifdef DMIR_VALIDATE_ADDRESSES
+                if (node >= octree->count) return false;
+                #endif
+                dst->mask[octant] = *PTR_INDEX(octree->mask, node);
+                // dst->node[octant] = *PTR_INDEX(octree->addr, node);
+                dst->node[octant] = node;
+                dst->data[octant] = node;
+            }
+            node++;
+        }
+    }
+    
+    return true;
+}
+
 const int OCTREE_LOAD_RAW = 0;
 const int OCTREE_LOAD_SPLIT = 1;
 const int OCTREE_LOAD_PACKED = 2;
@@ -888,6 +942,10 @@ int main(int argc, char* argv[]) {
         std::cerr << "Usage: " << argv[0] << " <file_path>" << std::endl;
     } else {
         file_octree = load_octree(argv[1], octree_load_mode);
+        
+        file_octree->lookups = state.dmir_lookups;
+        file_octree->geometry.traverse_start = octree_traverse_start;
+        file_octree->geometry.traverse_next = octree_traverse_next;
     }
     
     create_scene(&state, file_octree);
