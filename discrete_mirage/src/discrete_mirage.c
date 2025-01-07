@@ -1601,7 +1601,8 @@ static void render_ortho_local_stencil(FramebufferInternal* framebuffer, Fragmen
     Queue* queues, Queue* queues_forward, Queue* queues_reverse,
     MapInfo* map, uint32_t* indices, uint32_t* octants,
     OrthoStackItem* stack_start, Address address,
-    Depth depth, Depth min_depth, Depth max_depth, Rect rect)
+    Depth depth, Depth min_depth, Depth max_depth, Rect rect,
+    SInt max_stack_level)
 {
     OrthoStackItem* stack = stack_start;
     stack_start--;
@@ -1709,6 +1710,9 @@ static void render_ortho_local_stencil(FramebufferInternal* framebuffer, Fragmen
         
         if (v.is_cube) {
             v.mask = 255;
+            
+            // Make sure we don't traverse beyond the initialized stack!
+            is_splat |= (stack->level == max_stack_level);
         } else {
             is_splat |= (stack->level == v.max_level);
             
@@ -1918,6 +1922,9 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
         
         if (v.is_cube) {
             v.mask = 255;
+            
+            // Make sure we don't traverse beyond the initialized stack!
+            is_splat |= (stack->level == max_stack_level);
         } else {
             is_splat |= (stack->level == v.max_level);
             
@@ -1982,7 +1989,8 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
                 queues, queues_forward, queues_reverse,
                 &map, indices, batcher->lookups->octants,
                 stack, v.address,
-                depth, min_depth, max_depth, local_rect);
+                depth, min_depth, max_depth, local_rect,
+                max_stack_level);
             stack--;
         }
         #endif
