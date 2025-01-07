@@ -3,7 +3,8 @@
 
 // Discrete Mirage: A library for rendering voxel models on CPU.
 // Features:
-// * can render octree-like geometries (octrees, DAGs, etc.)
+// * can render octree-like geometries (octrees, DAGs,
+//   procedural volumes defined by distance functions, etc.)
 // * front-to-back splatting with occlusion culling
 // * supports cage deformations and splat dilation
 // * supports several splat shapes: points, quads, squares, circles, cubes
@@ -173,20 +174,34 @@ typedef struct DMirTraversal {
     uint64_t data[8];
 } DMirTraversal;
 
+typedef struct DMirNodeBox {
+    uint32_t x, y, z, level;
+} DMirNodeBox;
+
 // The "base class" of traversable structures (octrees,
 // DAGs, etc.); implementations of the corresponding
 // structs must have it as the first field.
-// traverse_start: given the initial references to
-// a node (node_ref) and a voxel (data_ref), populate
-// dst's 1st item with actual information about the node.
-// traverse_next: given the previous level's traversal
-// info and the item index, populate dst's items with
-// the information about the item node's children.
+// * traverse_start: given the initial references to
+//   a node (node_ref) and a voxel (data_ref), populate
+//   dst's 1st item with actual information about the node.
+// * traverse_next: given the previous level's traversal
+//   info and the item index, populate dst's items with
+//   the information about the item node's children.
+// * evaluate: given the node's bounding box (defined by
+//   depth/level and min corner position in that level),
+//   calculate the voxel data reference for the node
+//   and return a number indicating whether the node
+//   should be skipped (-1), splatted (0) or subdivided
+//   further (1).
+// For procedural volumes, the evaluate callback should
+// be used; for everything else, use traverse_start
+// and traverse_next.
 // The semantics of node references and data references
 // are entirely up to the implementation.
 typedef struct DMirGeometry {
     DMirBool (*traverse_start)(void* geometry, DMirAddress node_ref, DMirAddress data_ref, DMirTraversal* dst);
     DMirBool (*traverse_next)(void* geometry, DMirTraversal* src, int32_t index, DMirTraversal* dst);
+    int32_t (*evaluate)(void* geometry, DMirNodeBox* node_box, DMirAddress* data_ref);
 } DMirGeometry;
 
 // Note: values are treated as inclusive [min, max] range
@@ -218,10 +233,10 @@ typedef struct DMirFrustum {
 } DMirFrustum;
 
 // max_level: if >= 0, limits the depth of traversal.
-// dilation_abs: dilate each node by this amount of pixels.
-// dilation_rel: dilate each node by a fraction of the root
-// node's cage size (e.g. for sparse point clouds).
-// shape: how the leaf nodes will be rendered.
+// * dilation_abs: dilate each node by this amount of pixels.
+// * dilation_rel: dilate each node by a fraction of the root
+//   node's cage size (e.g. for sparse point clouds).
+// * shape: how the leaf nodes will be rendered.
 typedef struct DMirEffects {
     int32_t max_level;
     float dilation_abs;
@@ -231,11 +246,11 @@ typedef struct DMirEffects {
 
 // Each batched geometry may be split into one or more
 // of these structs (depending on the cage deformation).
-// group: same value that was passed to dmir_batcher_add(...)
-// (this can be useful if multiple geometry instances may
-// belong to / constitute a single "3D object").
-// geometry: reference to the geometry itself.
-// matrix_normal: view-space matrix for calculating normals.
+// * group: same value that was passed to dmir_batcher_add(...)
+//   (this can be useful if multiple geometry instances may
+//   belong to / constitute a single "3D object").
+// * geometry: reference to the geometry itself.
+// * matrix_normal: view-space matrix for calculating normals.
 typedef struct DMirAffineInfo {
     uint32_t group;
     DMirGeometry* geometry;
@@ -243,11 +258,12 @@ typedef struct DMirAffineInfo {
 } DMirAffineInfo;
 
 // Framebufer's voxel buffer stores this data in each pixel:
-// affine_id: index in the array of affine_infos.
-// address: voxel index in the geometry's data array.
+// * affine_id: index in the array of affine_infos.
+// * voxel_id: voxel indetifier (typically an index in the
+//   geometry's data array, though semantics are up to the user).
 typedef struct DMirVoxelRef {
     DMirAffineID affine_id;
-    DMirAddress address;
+    DMirAddress voxel_id;
 } DMirVoxelRef;
 
 // An enumeration of diagnostic stats for a framebuffer
@@ -269,11 +285,11 @@ enum DMirStats {
 
 // The public (API) part of a framebuffer object.
 // None of its fields are supposed to be changed manually.
-// size_x, size_y: buffer's width and height.
-// row_shift: used when DMIR_ROW_POW2 is enabled.
-// stencil-related fields: if doing multi-threaded rendering,
-// work should be split into regions that don't overlap
-// the same stencil tiles.
+// * size_x, size_y: buffer's width and height.
+// * row_shift: used when DMIR_ROW_POW2 is enabled.
+// * stencil-related fields: if doing multi-threaded rendering,
+//   work should be split into regions that don't overlap
+//   the same stencil tiles.
 typedef struct DMirFramebuffer {
     DMirDepth* depth;
     DMirVoxelRef* voxel;
@@ -288,18 +304,18 @@ typedef struct DMirFramebuffer {
 } DMirFramebuffer;
 
 // The public (API) part of a batcher object.
-// viewport: the rectangle (in pixels) to which the camera's
-// view will be rendered. Read-only (don't change it).
-// frustum: the camera frustum parameters (also "read-only").
-// split_factor: the fraction of framebuffer's max dimension
-// (width or height) above which a geometry will be split into
-// separate subtrees that would be sorted by depth.
-// affine_distortion: the amount of distortion (in pixels)
-// below which a subtree is considered affine (non-deformed).
-// ortho_distortion: the amount of distortion (in pixels)
-// below which a subtree is considered orthographic.
-// rect: the bounding rectangle (in pixels) of all the 
-// batched subtrees' projections.
+// * viewport: the rectangle (in pixels) to which the camera's
+//   view will be rendered. Read-only (don't change it).
+// * frustum: the camera frustum parameters (also "read-only").
+// * split_factor: the fraction of framebuffer's max dimension
+//   (width or height) above which a geometry will be split into
+//   separate subtrees that would be sorted by depth.
+// * affine_distortion: the amount of distortion (in pixels)
+//   below which a subtree is considered affine (non-deformed).
+// * ortho_distortion: the amount of distortion (in pixels)
+//   below which a subtree is considered orthographic.
+// * rect: the bounding rectangle (in pixels) of all the 
+//   batched subtrees' projections.
 typedef struct DMirBatcher {
     DMirRect viewport;
     DMirFrustum frustum;

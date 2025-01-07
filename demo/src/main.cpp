@@ -72,7 +72,6 @@ typedef struct DMirSimpleData {
 typedef struct DMirOctree {
     DMirGeometry geometry;
     DMirLookups* lookups;
-    DMirVoxelData* data;
     uint32_t* addr;
     uint8_t* mask;
     uint32_t addr_stride;
@@ -80,6 +79,22 @@ typedef struct DMirOctree {
     uint32_t count;
     DMirBool is_packed;
 } DMirOctree;
+
+struct ProceduralGeometry {
+    DMirGeometry geometry;
+};
+
+struct ProceduralVoxelData {
+    DMirVoxelData api;
+};
+
+struct VoxelModel {
+    DMirGeometry* geometry;
+    DMirVoxelData* data;
+    int geometry_type;
+    int data_type;
+    std::vector<DMirAddress> roots;
+};
 
 // Enable this if you aren't sure that your octree(s)
 // contain valid node addresses everywhere
@@ -161,7 +176,7 @@ struct ProgramState {
     int splat_shape;
     
     std::vector<DPtr<Object3D>> objects;
-    std::vector<UPtr<DMirOctree>> octrees;
+    std::vector<UPtr<VoxelModel>> models;
     
     bool use_accumulation;
     int accum_count;
@@ -172,6 +187,8 @@ struct ProgramState {
     std::vector<int> accum_weights_lin;
     std::vector<int> accum_weights_exp;
 };
+
+double global_time = 0;
 
 void simple_data_get(void* data_ptr, DMirAddress address, void* out) {
     DMirSimpleData* data = (DMirSimpleData*)data_ptr;
@@ -185,6 +202,75 @@ void simple_data_get_rgb(void* data_ptr, DMirAddress address, void* out) {
     ((RGB24*)out)[0] = ((RGB24*)item)[0];
 }
 
+void procedural_data_get_rgb(void* data_ptr, DMirAddress address, void* out) {
+    uint8_t* bytes = (uint8_t*)(&address);
+    ((RGB24*)out)->r = bytes[0] ^ bytes[3] ^ bytes[6];
+    ((RGB24*)out)->g = bytes[1] ^ bytes[4] ^ bytes[7];
+    ((RGB24*)out)->b = bytes[2] ^ bytes[5];
+}
+
+float procedural_heightmap(float x, float y) {
+    int32_t ix = (int32_t)x;
+    int32_t iy = (int32_t)y;
+    float tx = x - ix;
+    float ty = y - iy;
+    int x0 = (ix + 0);
+    int x1 = (ix + 1);
+    int y0 = (iy + 0);
+    int y1 = (iy + 1);
+    uint32_t k0 = (0x01000193 ^ x0) * 0x01000193;
+    uint32_t k1 = (0x01000193 ^ x1) * 0x01000193;
+    uint32_t k00 = (k0 ^ y0*2166136261) * 0x01000193;
+    uint32_t k01 = (k1 ^ y0*2166136261) * 0x01000193;
+    uint32_t k10 = (k0 ^ y1*2166136261) * 0x01000193;
+    uint32_t k11 = (k1 ^ y1*2166136261) * 0x01000193;
+    float h_scale = 1.0f / (float)0xFFFF;
+    float h00 = (k00 & 0xFFFF) * h_scale;
+    float h01 = (k01 & 0xFFFF) * h_scale;
+    float h10 = (k10 & 0xFFFF) * h_scale;
+    float h11 = (k11 & 0xFFFF) * h_scale;
+    float txm = (3 - 2*tx)*tx*tx;
+    float tym = (3 - 2*ty)*ty*ty;
+    float h0 = h00 * (1 - txm) + h01 * txm;
+    float h1 = h10 * (1 - txm) + h11 * txm;
+    return h0 * (1 - tym) + h1 * tym;
+}
+
+const float sqrt3 = sqrtf(3);
+
+int32_t procedural_evaluate(void* geometry, DMirNodeBox* node_box, DMirAddress* data_ref) {
+    float scale = 1.0f / (1 << node_box->level);
+    float x = (node_box->x + 0.5f) * scale;
+    float y = (node_box->y + 0.5f) * scale;
+    float z = (node_box->z + 0.5f) * scale;
+    float conservative_distance = scale * (0.5f * sqrt3);
+    
+    float anim_time = global_time * 0.1;
+    float terrain_detail = 4;
+    float terrain_x = (x + anim_time) * terrain_detail;
+    float terrain_y = (z + anim_time) * terrain_detail;
+    float terrain_height = 0.25f * procedural_heightmap(terrain_x, terrain_y);
+    // Height difference is not a Euclidean distance, so use a larger margin
+    float terrain_distance = (y - terrain_height) - conservative_distance * 2;
+    
+    float radius = 0.25f;
+    struct vec3 center = {.x = 0.5f, .y = 0.65f, .z = 0.5f};
+    struct vec3 point = {.x = x, .y = y, .z = z};
+    float distance_to_center = psvec3_distance(&point, &center);
+    float sphere_distance = (distance_to_center - radius) - conservative_distance;
+    
+    float dist = std::min(terrain_distance, sphere_distance);
+    
+    float v = y;
+    *data_ref = 0;
+    uint8_t* data_rgb = (uint8_t*)data_ref;
+    data_rgb[0] = (uint8_t)(v*v * 255.0f);
+    data_rgb[1] = (uint8_t)(v * 255.0f);
+    data_rgb[2] = (uint8_t)(v * 0.0f);
+    
+    return (dist <= 0 ? 1 : -1);
+}
+
 DMirBool octree_traverse_start(void* geometry, uint64_t node_ref, uint64_t data_ref, DMirTraversal* dst) {
     DMirOctree* octree = (DMirOctree*)geometry;
     
@@ -193,7 +279,6 @@ DMirBool octree_traverse_start(void* geometry, uint64_t node_ref, uint64_t data_
     #endif
     
     dst->mask[0] = *PTR_INDEX(octree->mask, node_ref);
-    // dst->node[0] = *PTR_INDEX(octree->addr, node_ref);
     dst->node[0] = node_ref;
     dst->data[0] = node_ref;
     
@@ -204,7 +289,6 @@ DMirBool octree_traverse_next(void* geometry, DMirTraversal* src, int32_t index,
     DMirOctree* octree = (DMirOctree*)geometry;
     
     uint8_t mask = src->mask[index];
-    // uint64_t node = src->node[index];
     uint64_t node = *PTR_INDEX(octree->addr, src->node[index]);
     
     if (octree->is_packed) {
@@ -214,7 +298,6 @@ DMirBool octree_traverse_next(void* geometry, DMirTraversal* src, int32_t index,
                 if (node >= octree->count) return false;
                 #endif
                 dst->mask[octant] = *PTR_INDEX(octree->mask, node);
-                // dst->node[octant] = *PTR_INDEX(octree->addr, node);
                 dst->node[octant] = node;
                 dst->data[octant] = node;
                 node++;
@@ -227,7 +310,6 @@ DMirBool octree_traverse_next(void* geometry, DMirTraversal* src, int32_t index,
                 if (node >= octree->count) return false;
                 #endif
                 dst->mask[octant] = *PTR_INDEX(octree->mask, node);
-                // dst->node[octant] = *PTR_INDEX(octree->addr, node);
                 dst->node[octant] = node;
                 dst->data[octant] = node;
             }
@@ -237,6 +319,12 @@ DMirBool octree_traverse_next(void* geometry, DMirTraversal* src, int32_t index,
     
     return true;
 }
+
+const int MODEL_GEOMETRY_OCTREE = 1;
+const int MODEL_DATA_SIMPLE = 1;
+
+const int MODEL_GEOMETRY_PROCEDURAL = 2;
+const int MODEL_DATA_PROCEDURAL = 2;
 
 const int OCTREE_LOAD_RAW = 0;
 const int OCTREE_LOAD_SPLIT = 1;
@@ -271,28 +359,40 @@ static void read_file(std::string path, int* file_size, char** data) {
     file.close();
 }
 
-void delete_octree(DMirOctree* octree) {
-    delete (DMirSimpleData*)octree->data;
-    delete octree->addr;
-    delete octree;
+void delete_model(VoxelModel* model) {
+    if (model->data_type == MODEL_DATA_SIMPLE) {
+        delete (DMirSimpleData*)model->data;
+    } else if (model->data_type == MODEL_DATA_PROCEDURAL) {
+        delete (ProceduralVoxelData*)model->data;
+    }
+    
+    if (model->geometry_type == MODEL_GEOMETRY_OCTREE) {
+        DMirOctree* octree = (DMirOctree*)model->geometry;
+        delete octree->addr;
+        delete octree;
+    } else if (model->geometry_type == MODEL_GEOMETRY_PROCEDURAL) {
+        delete (ProceduralGeometry*)model->geometry;
+    }
+    
+    delete model;
 }
 
-UPtr<DMirOctree> create_octree(DMirLookups* lookups) {
-    auto octree = UPtr<DMirOctree>(new DMirOctree(), delete_octree);
+DMirOctree* create_octree(DMirLookups* lookups) {
+    auto octree = new DMirOctree();
     octree->is_packed = false;
     octree->count = 0;
     octree->addr = nullptr;
     octree->mask = nullptr;
-    octree->data = nullptr;
     octree->addr_stride = 0;
     octree->mask_stride = 0;
     octree->lookups = lookups;
     octree->geometry.traverse_start = octree_traverse_start;
     octree->geometry.traverse_next = octree_traverse_next;
+    octree->geometry.evaluate = nullptr;
     return octree;
 }
 
-UPtr<DMirOctree> load_octree(DMirLookups* lookups, std::string path, int mode) {
+UPtr<VoxelModel> load_octree(DMirLookups* lookups, std::string path, int mode) {
     int file_size = 0;
     char* file_data = nullptr;
     read_file(path, &file_size, &file_data);
@@ -302,7 +402,7 @@ UPtr<DMirOctree> load_octree(DMirLookups* lookups, std::string path, int mode) {
     const int node_size = 8;
     
     if ((file_data == nullptr) || (file_size < 8*node_size)) {
-        return UPtr<DMirOctree>(nullptr, nullptr);
+        return UPtr<VoxelModel>(nullptr, nullptr);
     }
     
     auto voxel_count = file_size / node_size;
@@ -321,9 +421,15 @@ UPtr<DMirOctree> load_octree(DMirLookups* lookups, std::string path, int mode) {
     octree->count = voxel_count;
     octree->addr = (uint32_t*)file_data;
     octree->mask = ((uint8_t*)file_data) + 4;
-    octree->data = (DMirVoxelData*)voxel_data;
     octree->addr_stride = 8;
     octree->mask_stride = 8;
+    
+    auto model = UPtr<VoxelModel>(new VoxelModel(), delete_model);
+    model->data = (DMirVoxelData*)voxel_data;
+    model->data_type = MODEL_DATA_SIMPLE;
+    model->geometry = (DMirGeometry*)octree;
+    model->geometry_type = MODEL_GEOMETRY_OCTREE;
+    model->roots.push_back(0);
     
     if (mode != OCTREE_LOAD_RAW) {
         char* new_data = new char[octree->count * (4 + 1 + 3)];
@@ -352,7 +458,7 @@ UPtr<DMirOctree> load_octree(DMirLookups* lookups, std::string path, int mode) {
                     if (count > octree->count) {
                         // Recursion detected, can't proceed
                         delete new_data;
-                        return octree;
+                        return model;
                     }
                 }
             }
@@ -378,37 +484,28 @@ UPtr<DMirOctree> load_octree(DMirLookups* lookups, std::string path, int mode) {
         voxel_data->items_stride = 3;
     }
     
-    return octree;
+    return model;
 }
 
-UPtr<DMirOctree> make_recursive_cube(DMirLookups* lookups, int r, int g, int b) {
-    uint8_t mask_color[] = {255, (uint8_t)r, (uint8_t)g, (uint8_t)b};
-    uint32_t* octree_data = (uint32_t*)(new uint8_t[8 * 8]);
-    for (int node_index = 0; node_index < 8; node_index++) {
-        octree_data[node_index*2+0] = 0;
-        octree_data[node_index*2+1] = ((uint32_t*)mask_color)[0];
-    }
-    
-    auto voxel_count = 8;
-    
-    auto voxel_data = new DMirSimpleData();
-    voxel_data->api.get = simple_data_get_rgb;
-    voxel_data->api.data_count = voxel_count;
+UPtr<VoxelModel> make_procedural_geometry() {
+    auto voxel_data = new ProceduralVoxelData();
+    voxel_data->api.get = procedural_data_get_rgb;
+    voxel_data->api.data_count = 0;
     voxel_data->api.item_size = 3;
-    voxel_data->items_stride = 8;
-    voxel_data->items = ((uint8_t*)octree_data) + 5;
-    voxel_data->palette = nullptr;
-    voxel_data->palette_count = 0;
     
-    auto octree = create_octree(lookups);
-    octree->is_packed = false;
-    octree->count = voxel_count;
-    octree->addr = octree_data;
-    octree->mask = ((uint8_t*)octree_data) + 4;
-    octree->data = (DMirVoxelData*)voxel_data;
-    octree->addr_stride = 8;
-    octree->mask_stride = 8;
-    return octree;
+    auto proc_geo = new ProceduralGeometry();
+    proc_geo->geometry.traverse_start = nullptr;
+    proc_geo->geometry.traverse_next = nullptr;
+    proc_geo->geometry.evaluate = procedural_evaluate;
+    
+    auto model = UPtr<VoxelModel>(new VoxelModel(), delete_model);
+    model->data = (DMirVoxelData*)voxel_data;
+    model->data_type = MODEL_DATA_PROCEDURAL;
+    model->geometry = (DMirGeometry*)proc_geo;
+    model->geometry_type = MODEL_GEOMETRY_PROCEDURAL;
+    model->roots.push_back(0);
+    
+    return model;
 }
 
 struct mat4 calculate_projection_matrix(ProgramState& state) {
@@ -432,29 +529,30 @@ struct mat4 calculate_projection_matrix(ProgramState& state) {
 void create_scene(ProgramState& state, std::string model_path) {
     auto lookups = state.dmir_lookups.get();
     
-    int main_geometry_id = -1;
-    auto file_octree = load_octree(lookups, model_path, octree_load_mode);
-    if (file_octree) {
-        main_geometry_id = 0;
-        state.octrees.push_back(std::move(file_octree));
+    auto geometry_id = 0;
+    int grid_extent = 0;
+    float grid_offset = 1.2f;
+    
+    auto model = load_octree(lookups, model_path, octree_load_mode);
+    DMirEffects effects = {.max_level = -1, .dilation_abs = 0, .dilation_rel = 0};
+    
+    if (!model) {
+        model = make_procedural_geometry();
+        state.max_level = 8;
+        state.splat_shape = DMIR_SHAPE_CIRCLE;
+    } else {
+        grid_extent = 2;
     }
     
-    const float grid_offset = 1.2f;
-    const int grid_extent = 2;
+    state.models.push_back(std::move(model));
+    
     for (int gz = grid_extent; gz >= -grid_extent; gz--) {
         for (int gx = grid_extent; gx >= -grid_extent; gx--) {
-            auto geometry_id = main_geometry_id;
-            if (geometry_id < 0) {
-                geometry_id = state.octrees.size();
-                auto octree = make_recursive_cube(lookups, 128+gx*32, 255, 128+gz*32);
-                state.octrees.push_back(std::move(octree));
-            }
-            
             auto object3d = new Object3D();
             object3d->geometry_id = geometry_id;
             object3d->root = 0;
             object3d->hide = false;
-            object3d->effects = {.max_level = -1, .dilation_abs = 0, .dilation_rel = 0};
+            object3d->effects = effects;
             object3d->position = svec3(gx * grid_offset, 0, gz * grid_offset);
             object3d->rotation = squat_null();
             object3d->scale = svec3(1, 1, 1);
@@ -512,9 +610,10 @@ void render_scene_subset(ProgramState& state, struct mat4 proj_matrix, int imin,
         
         if (object3d->geometry_id >= 0) {
             int group = index;
-            auto octree = state.octrees[object3d->geometry_id].get();
+            auto model = state.models[object3d->geometry_id].get();
+            DMirAddress root = model->roots[object3d->root];
             dmir_batcher_add(batcher, framebuffer,
-                group, (float*)cage, &octree->geometry, object3d->root, effects);
+                group, (float*)cage, model->geometry, root, effects);
         }
     }
     
@@ -652,6 +751,9 @@ void render_scene_to_buffer(ProgramState& state, RGBA32* pixels, int stride) {
     auto accum_weights_lin = state.accum_weights_lin.data();
     auto accum_weights_exp = state.accum_weights_exp.data();
     
+    auto scene_objects = state.objects.data();
+    auto models = state.models.data();
+    
     int buf_stride = dmir_row_size(framebuffer);
     for (int y = 0; y < state.screen_height; y++) {
         RGBA32* pixels_row = pixels + y * stride;
@@ -680,8 +782,9 @@ void render_scene_to_buffer(ProgramState& state, RGBA32* pixels, int stride) {
                     color = {.r = 0, .g = 196, .b = 255};
                 } else {
                     auto affine_info = &affine_infos[voxels_row[x].affine_id];
-                    auto octree = (DMirOctree*)affine_info->geometry;
-                    octree->data->get(octree->data, voxels_row[x].address, &color);
+                    auto geometry_id = scene_objects[affine_info->group]->geometry_id;
+                    auto voxel_data = models[geometry_id]->data;
+                    voxel_data->get(voxel_data, voxels_row[x].voxel_id, &color);
                 }
             }
             
@@ -1016,6 +1119,8 @@ void main_loop(ProgramState& state) {
         RGFW_window_swapBuffers(window);
         
         auto time = get_time_ms();
+        
+        global_time = time / 1000.0;
         
         if ((time - last_title_update > frame_time_update_period) & (accum_count > 0)) {
             last_title_update = time;

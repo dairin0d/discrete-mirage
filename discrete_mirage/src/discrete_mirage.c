@@ -236,6 +236,7 @@ typedef DMirAffineID AffineID;
 typedef DMirQueue Queue;
 typedef DMirLookups Lookups;
 typedef DMirTraversal Traversal;
+typedef DMirNodeBox NodeBox;
 typedef DMirGeometry Geometry;
 
 typedef DMirRect Rect;
@@ -290,6 +291,7 @@ typedef struct StencilTile {
 typedef struct GridStackItem {
     ProjectedVertex grid[GRID_SIZE];
     Rect rect;
+    NodeBox node_box;
     Traversal traversal;
     uint32_t queue;
     SInt level;
@@ -303,6 +305,7 @@ typedef struct OrthoStackItem {
     Vector3S center;
     Vector3S extent;
     Rect rect;
+    NodeBox node_box;
     Traversal traversal;
     uint32_t queue;
     SInt level;
@@ -313,12 +316,13 @@ typedef struct Fragment {
     int32_t x;
     int32_t y;
     Depth z;
-    Address address;
+    Address data_ref;
 } Fragment;
 
 typedef struct Subtree {
     AffineID affine_id;
     ProjectedVertex cage[CAGE_SIZE];
+    NodeBox node_box;
     uint64_t node_ref;
     uint64_t data_ref;
     Effects effects;
@@ -511,6 +515,13 @@ static inline Depth dz_to_depth(BatcherInternal* batcher, float dz) {
     return (Depth)dz;
 }
 #endif
+
+static inline void node_box_child(const NodeBox* src, SInt octant, NodeBox* dst) {
+    dst->level = src->level + 1;
+    dst->x = (src->x << 1) + ((octant & 0b001) != 0);
+    dst->y = (src->y << 1) + ((octant & 0b010) != 0);
+    dst->z = (src->z << 1) + ((octant & 0b100) != 0);
+}
 
 static inline SInt is_occluded_quad(FramebufferInternal* framebuffer, Rect* rect, Depth depth) {
     #ifndef DMIR_USE_OCCLUSION
@@ -873,18 +884,18 @@ void calculate_screen_bounds(ProjectedVertex* grid, Bounds* bounds, float* max_s
 )
 
 static inline void write_pixel(FramebufferInternal* framebuffer, SInt i,
-    AffineID affine_id, Address address)
+    AffineID affine_id, Address data_ref)
 {
     STAT_INCREMENT(framebuffer, DMIR_FRAGMENTS_WRITTEN);
     framebuffer->api.voxel[i].affine_id = affine_id;
-    framebuffer->api.voxel[i].address = address;
+    framebuffer->api.voxel[i].voxel_id = data_ref;
 }
 
-static inline void add_fragment(Fragment** fragments, SInt x, SInt y, Depth depth, Address address) {
+static inline void add_fragment(Fragment** fragments, SInt x, SInt y, Depth depth, Address data_ref) {
     fragments[0]->x = x;
     fragments[0]->y = y;
     fragments[0]->z = depth;
-    fragments[0]->address = address;
+    fragments[0]->data_ref = data_ref;
     fragments[0]++;
 }
 
@@ -907,24 +918,24 @@ static inline void add_fragment(Fragment** fragments, SInt x, SInt y, Depth dept
 
 #ifdef DMIR_USE_SPLAT_DEFERRED
 #if STENCIL_BITS > 0
-#define SPLAT(framebuffer, fragments, x, y, depth, affine_id, address, stop) {\
+#define SPLAT(framebuffer, fragments, x, y, depth, affine_id, data_ref, stop) {\
     STAT_INCREMENT(framebuffer, DMIR_FRAGMENTS_ADDED);\
-    add_fragment(fragments, x, y, depth, address);\
+    add_fragment(fragments, x, y, depth, data_ref);\
 }
 #else
-#define SPLAT(framebuffer, fragments, x, y, depth, affine_id, address, stop) {\
+#define SPLAT(framebuffer, fragments, x, y, depth, affine_id, data_ref, stop) {\
     STAT_INCREMENT(framebuffer, DMIR_FRAGMENTS_ADDED);\
     CHECK_AND_WRITE_DEPTH(framebuffer, x, y, depth, stop);\
-    add_fragment(fragments, x, y, depth, address);\
+    add_fragment(fragments, x, y, depth, data_ref);\
 }
 #endif
 #else
-#define SPLAT(framebuffer, fragments, x, y, depth, affine_id, address, stop) {\
+#define SPLAT(framebuffer, fragments, x, y, depth, affine_id, data_ref, stop) {\
     STAT_INCREMENT(framebuffer, DMIR_FRAGMENTS_ADDED);\
     CHECK_AND_WRITE_DEPTH(framebuffer, x, y, depth, stop);\
     {\
         SInt i = PIXEL_INDEX(framebuffer, x, y);\
-        write_pixel(framebuffer, i, affine_id, address);\
+        write_pixel(framebuffer, i, affine_id, data_ref);\
     }\
 }
 #endif
@@ -1232,7 +1243,7 @@ typedef struct LocalVariables {
     SInt offset_x;
     SInt offset_y;
     Vector3S position;
-    Address address;
+    Address node_ref;
     Address data_ref;
     int32_t level;
     Rect rect;
@@ -1600,7 +1611,7 @@ static void render_ortho_local_stencil(FramebufferInternal* framebuffer, Fragmen
     AffineID affine_id, Geometry* geometry, Effects* effects, Coord dilation,
     Queue* queues, Queue* queues_forward, Queue* queues_reverse,
     MapInfo* map, uint32_t* indices, uint32_t* octants,
-    OrthoStackItem* stack_start, Address address,
+    OrthoStackItem* stack_start, Address node_ref, NodeBox node_box,
     Depth depth, Depth min_depth, Depth max_depth, Rect rect,
     SInt max_stack_level)
 {
@@ -1648,7 +1659,7 @@ static void render_ortho_local_stencil(FramebufferInternal* framebuffer, Fragmen
         .offset_x = offset_x,
         .offset_y = offset_y,
         .position = {.x = 0, .y = 0, .z = 0},
-        .address = address,
+        .node_ref = node_ref,
         .rect = {},
         .size_max = 0,
         .row_mask = 0,
@@ -1667,11 +1678,13 @@ static void render_ortho_local_stencil(FramebufferInternal* framebuffer, Fragmen
             }
             octant = stack->queue & 7;
             stack->queue >>= 4;
-            v.address = stack->traversal.node[octant];
+            v.node_ref = stack->traversal.node[octant];
             
             v.position.x = stack->center.x + stack->deltas[octant].x;
             v.position.y = stack->center.y + stack->deltas[octant].y;
             v.position.z = stack->center.z + stack->deltas[octant].z;
+            
+            node_box_child(&stack->node_box, octant, &node_box);
         }
         
         grid_initialized:;
@@ -1716,8 +1729,12 @@ static void render_ortho_local_stencil(FramebufferInternal* framebuffer, Fragmen
         } else {
             is_splat |= (stack->level == v.max_level);
             
-            // Non-voxel data at max level might not actually be stored
-            if (!is_splat) {
+            if (geometry->evaluate != NULL) {
+                int32_t eval_result = geometry->evaluate(geometry, &node_box, &stack->traversal.data[octant]);
+                if (eval_result < 0) continue;
+                is_splat |= (eval_result == 0);
+                v.mask = 255;
+            } else if (!is_splat) {
                 v.mask = stack->traversal.mask[octant];
                 is_splat = !v.mask;
             }
@@ -1737,7 +1754,7 @@ static void render_ortho_local_stencil(FramebufferInternal* framebuffer, Fragmen
         }
         
         #ifdef USE_MAP
-        if (v.size_max < 4) {
+        if ((v.size_max < 4) & (geometry->evaluate == NULL)) {
             v.deltas = stack->deltas;
             v.level = stack->level;
             v.data_ref = stack->traversal.data[octant];
@@ -1749,15 +1766,16 @@ static void render_ortho_local_stencil(FramebufferInternal* framebuffer, Fragmen
         
         stack++;
         stack->rect = v.rect;
+        stack->node_box = node_box;
         stack->center = v.position;
         stack->is_cube = v.is_cube;
         
-        if (v.is_cube) {
-            uint64_t data = (stack-1)->traversal.data[octant];
+        if (v.is_cube | (geometry->evaluate != NULL)) {
+            uint64_t data_ref = (stack-1)->traversal.data[octant];
             for (SInt i = 0; i < 8; i++) {
                 stack->traversal.mask[i] = 255;
-                stack->traversal.node[i] = address;
-                stack->traversal.data[i] = data;
+                stack->traversal.node[i] = node_ref;
+                stack->traversal.data[i] = data_ref;
             }
         } else if (!geometry->traverse_next(geometry, &(stack-1)->traversal, octant, &stack->traversal)) {
             stack--;
@@ -1771,8 +1789,8 @@ static void render_ortho_local_stencil(FramebufferInternal* framebuffer, Fragmen
 
 void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
     FramebufferInternal* framebuffer, Fragment** fragments,
-    AffineID affine_id, Geometry* geometry, Address address, Address data_ref,
-    Effects effects, SInt is_cube,
+    AffineID affine_id, Geometry* geometry, Address node_ref, Address data_ref,
+    NodeBox node_box, Effects effects, SInt is_cube,
     ProjectedVertex* grid, OrthoStackItem* stack_start)
 {
     Vector3S matrix[4];
@@ -1826,7 +1844,13 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
     Queue* queues_forward = queues + (((octant_order << 3) | (starting_octant ^ 0b000)) << 8);
     Queue* queues_reverse = queues + (((octant_order << 3) | (starting_octant ^ 0b111)) << 8);
     
-    if (!geometry->traverse_start(geometry, address, data_ref, &stack->traversal)) return;
+    if (geometry->evaluate != NULL) {
+        stack->traversal.mask[0] = 255;
+        stack->traversal.node[0] = node_ref;
+        stack->traversal.data[0] = data_ref;
+    } else {
+        if (!geometry->traverse_start(geometry, node_ref, data_ref, &stack->traversal)) return;
+    }
     
     stack->queue = 0;
     
@@ -1860,7 +1884,7 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
         .offset_x = 0,
         .offset_y = 0,
         .position = position,
-        .address = address,
+        .node_ref = node_ref,
         .data_ref = data_ref,
         .rect = {},
         .size_max = 0,
@@ -1882,11 +1906,13 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
             }
             octant = stack->queue & 7;
             stack->queue >>= 4;
-            v.address = stack->traversal.node[octant];
+            v.node_ref = stack->traversal.node[octant];
             
             v.position.x = stack->center.x + stack->deltas[octant].x;
             v.position.y = stack->center.y + stack->deltas[octant].y;
             v.position.z = stack->center.z + stack->deltas[octant].z;
+            
+            node_box_child(&stack->node_box, octant, &node_box);
         }
         
         grid_initialized:;
@@ -1928,8 +1954,12 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
         } else {
             is_splat |= (stack->level == v.max_level);
             
-            // Non-voxel data at max level might not actually be stored
-            if (!is_splat) {
+            if (geometry->evaluate != NULL) {
+                int32_t eval_result = geometry->evaluate(geometry, &node_box, &stack->traversal.data[octant]);
+                if (eval_result < 0) continue;
+                is_splat |= (eval_result == 0);
+                v.mask = 255;
+            } else if (!is_splat) {
                 v.mask = stack->traversal.mask[octant];
                 is_splat = !v.mask;
             }
@@ -1949,7 +1979,7 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
         }
         
         #ifdef USE_MAP
-        if (v.size_max < 4) {
+        if ((v.size_max < 4) & (geometry->evaluate == NULL)) {
             v.deltas = stack->deltas;
             v.level = stack->level;
             v.data_ref = stack->traversal.data[octant];
@@ -1961,15 +1991,16 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
         
         stack++;
         stack->rect = v.rect;
+        stack->node_box = node_box;
         stack->center = v.position;
         stack->is_cube = v.is_cube;
         
-        if (v.is_cube) {
-            uint64_t data = (stack-1)->traversal.data[octant];
+        if (v.is_cube | (geometry->evaluate != NULL)) {
+            uint64_t data_ref = (stack-1)->traversal.data[octant];
             for (SInt i = 0; i < 8; i++) {
                 stack->traversal.mask[i] = 255;
-                stack->traversal.node[i] = address;
-                stack->traversal.data[i] = data;
+                stack->traversal.node[i] = node_ref;
+                stack->traversal.data[i] = data_ref;
             }
         } else if (!geometry->traverse_next(geometry, &(stack-1)->traversal, octant, &stack->traversal)) {
             stack--;
@@ -1988,7 +2019,7 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
                 affine_id, geometry, &effects, dilation,
                 queues, queues_forward, queues_reverse,
                 &map, indices, batcher->lookups->octants,
-                stack, v.address,
+                stack, v.node_ref, node_box,
                 depth, min_depth, max_depth, local_rect,
                 max_stack_level);
             stack--;
@@ -2106,7 +2137,7 @@ void dmir_framebuffer_resize(Framebuffer* framebuffer_ptr, uint32_t size_x, uint
 void dmir_framebuffer_clear(Framebuffer* framebuffer_ptr) {
     FramebufferInternal* framebuffer = (FramebufferInternal*)framebuffer_ptr;
     
-    VoxelRef voxel = {.affine_id = -1, .address = 0};
+    VoxelRef voxel = {.affine_id = -1, .voxel_id = 0};
     
     for (SInt y = 0; y < framebuffer->api.size_y; y++) {
         Depth* depth_row = framebuffer->api.depth + PIXEL_INDEX(framebuffer, 0, y);
@@ -2307,13 +2338,21 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer_ptr,
     stack->rect = viewport;
     stack->is_behind = (bounds.min_z <= batcher->eye_z);
     
-    if (!geometry->traverse_start(geometry, root, 0, &stack->traversal)) return;
+    if (geometry->evaluate != NULL) {
+        stack->traversal.mask[0] = 255;
+        stack->traversal.node[0] = root;
+        stack->traversal.data[0] = 0;
+    } else {
+        if (!geometry->traverse_start(geometry, root, 0, &stack->traversal)) return;
+    }
     
     stack->queue = 0;
     
-    Address address = root;
+    Address node_ref = root;
     SInt octant = 0;
     SInt mask = stack->traversal.mask[octant];
+    
+    NodeBox node_box = {.x = 0, .y = 0, .z = 0, .level = 0};
     
     Queue* queues = batcher->lookups->sparse;
     
@@ -2328,7 +2367,8 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer_ptr,
             octant = stack->queue & 7;
             stack->queue >>= 4;
             mask = stack->traversal.mask[octant];
-            address = stack->traversal.node[octant];
+            node_ref = stack->traversal.node[octant];
+            node_box_child(&stack->node_box, octant, &node_box);
             initialize_subgrid(stack->grid, (stack-1)->grid, octant);
         }
         
@@ -2391,6 +2431,13 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer_ptr,
             if (is_occluded_quad(framebuffer, &rect, depth)) continue;
         }
         
+        if (geometry->evaluate != NULL) {
+            int32_t eval_result = geometry->evaluate(geometry, &node_box, &stack->traversal.data[octant]);
+            if (eval_result < 0) continue;
+            is_splat |= (eval_result == 0);
+            mask = 255;
+        }
+        
         // Calculate the remaining (non-corner) vertices
         // This is also required for calculating matrix axes and starting octant
         calculate_midpoints(stack->grid, batcher);
@@ -2422,7 +2469,8 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer_ptr,
                 subtree->bounds = bounds;
                 subtree->rect = rect;
                 cage_from_grid(stack->grid, subtree->cage);
-                subtree->node_ref = address;
+                subtree->node_box = node_box;
+                subtree->node_ref = node_ref;
                 subtree->data_ref = stack->traversal.data[octant];
                 subtree->effects = effects;
                 subtree->effects.max_level -= stack->level;
@@ -2443,16 +2491,27 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer_ptr,
         
         SInt octant_order = calculate_octant_order_grid(stack->grid);
         
-        if (geometry->traverse_next(geometry, &stack->traversal, octant, &(stack+1)->traversal)) {
-            stack++;
-            stack->level = (stack-1)->level + 1;
-            stack->rect = rect;
-            stack->is_behind = intersects_eye_plane;
-            stack->affine_id = (stack-1)->affine_id;
-            
-            Queue* queues_forward = queues + (((octant_order << 3) | (starting_octant)) << 8);
-            stack->queue = queues_forward[mask].octants;
+        stack++;
+        stack->level = (stack-1)->level + 1;
+        stack->rect = rect;
+        stack->node_box = node_box;
+        stack->is_behind = intersects_eye_plane;
+        stack->affine_id = (stack-1)->affine_id;
+        
+        if (geometry->evaluate != NULL) {
+            Address data_ref = (stack-1)->traversal.data[octant];
+            for (SInt i = 0; i < 8; i++) {
+                stack->traversal.mask[i] = 255;
+                stack->traversal.node[i] = node_ref;
+                stack->traversal.data[i] = data_ref;
+            }
+        } else if (!geometry->traverse_next(geometry, &(stack-1)->traversal, octant, &stack->traversal)) {
+            stack--;
+            continue;
         }
+        
+        Queue* queues_forward = queues + (((octant_order << 3) | (starting_octant)) << 8);
+        stack->queue = queues_forward[mask].octants;
     } while (stack > stack_start);
 }
 
@@ -2642,7 +2701,7 @@ void write_fragments(RendererInternal* renderer, FramebufferInternal* framebuffe
         
         {
             SInt i = PIXEL_INDEX(framebuffer, fragment->x, fragment->y);
-            write_pixel(framebuffer, i, affine_id, fragment->address);
+            write_pixel(framebuffer, i, affine_id, fragment->data_ref);
         }
     }
     
@@ -2722,13 +2781,22 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
     stack->is_behind = (bounds.min_z <= batcher->eye_z);
     stack->is_cube = FALSE;
     
-    Address address = subtree->node_ref;
-    if (!geometry->traverse_start(geometry, address, subtree->data_ref, &stack->traversal)) return;
+    Address node_ref = subtree->node_ref;
+    
+    if (geometry->evaluate != NULL) {
+        stack->traversal.mask[0] = 255;
+        stack->traversal.node[0] = node_ref;
+        stack->traversal.data[0] = subtree->data_ref;
+    } else {
+        if (!geometry->traverse_start(geometry, node_ref, subtree->data_ref, &stack->traversal)) return;
+    }
     
     stack->queue = 0;
     
     SInt octant = 0;
     SInt mask = stack->traversal.mask[octant];
+    
+    NodeBox node_box = subtree->node_box;
     
     Queue* queues = batcher->lookups->sparse;
     
@@ -2747,7 +2815,8 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
             octant = stack->queue & 7;
             stack->queue >>= 4;
             mask = stack->traversal.mask[octant];
-            address = stack->traversal.node[octant];
+            node_ref = stack->traversal.node[octant];
+            node_box_child(&stack->node_box, octant, &node_box);
             initialize_subgrid(stack->grid, (stack-1)->grid, octant);
         }
         
@@ -2803,13 +2872,25 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
         // Skip if not visible
         if ((rect.min_x > rect.max_x) | (rect.min_y > rect.max_y)) continue;
         
+        if (!intersects_near_plane) {
+            Depth depth = z_to_depth(batcher, bounds.min_z);
+            
+            // Do an occlusion check
+            if (is_occluded_quad(framebuffer, &rect, depth)) continue;
+        }
+        
         SInt is_cube = stack->is_cube;
+        
+        if ((!is_cube) & (geometry->evaluate != NULL)) {
+            int32_t eval_result = geometry->evaluate(geometry, &node_box, &stack->traversal.data[octant]);
+            if (eval_result < 0) continue;
+            is_splat |= (eval_result == 0);
+            mask = 255;
+        }
         
         if (intersects_near_plane) {
             if (is_pixel | is_splat) continue;
         } else {
-            Depth depth = z_to_depth(batcher, bounds.min_z);
-            
             if (is_cube) {
                 is_splat = FALSE;
                 mask = 255;
@@ -2818,9 +2899,6 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
                 is_splat = FALSE;
                 mask = 255;
             }
-            
-            // Do an occlusion check
-            if (is_occluded_quad(framebuffer, &rect, depth)) continue;
         }
         
         // Calculate the remaining (non-corner) vertices
@@ -2852,7 +2930,8 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
             Address data_ref = stack->traversal.data[octant];
             
             render_ortho(renderer, batcher, framebuffer, fragments,
-                affine_id, geometry, address, data_ref, sub_effects, is_cube,
+                affine_id, geometry, node_ref, data_ref,
+                node_box, sub_effects, is_cube,
                 stack->grid, (OrthoStackItem*)(stack+1));
             continue;
         }
@@ -2870,15 +2949,16 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
         stack++;
         stack->level = (stack-1)->level + 1;
         stack->rect = rect;
+        stack->node_box = node_box;
         stack->is_behind = intersects_eye_plane;
         stack->is_cube = is_cube;
         
-        if (is_cube) {
-            uint64_t data = (stack-1)->traversal.data[octant];
+        if (is_cube | (geometry->evaluate != NULL)) {
+            Address data_ref = (stack-1)->traversal.data[octant];
             for (SInt i = 0; i < 8; i++) {
                 stack->traversal.mask[i] = 255;
-                stack->traversal.node[i] = address;
-                stack->traversal.data[i] = data;
+                stack->traversal.node[i] = node_ref;
+                stack->traversal.data[i] = data_ref;
             }
         } else if (!geometry->traverse_next(geometry, &(stack-1)->traversal, octant, &stack->traversal)) {
             stack--;
