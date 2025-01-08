@@ -542,10 +542,11 @@ void make_accum_weights(std::vector<int>& out, int count, float base, int denomi
         difference--;
     }
     
-    delete fweights;
-    
     out.clear();
     out.insert(out.end(), &iweights[0], &iweights[count]);
+    
+    delete[] fweights;
+    delete[] iweights;
 }
 
 void print_stats(ProgramState& state) {

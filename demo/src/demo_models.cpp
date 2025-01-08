@@ -55,7 +55,7 @@ void delete_model(VoxelModel* model) {
         delete octree;
     } else if (model->geometry_type == MODEL_GEOMETRY_PROCEDURAL) {
         auto proc_geo = (ProceduralGeometry*)model->geometry;
-        delete (uint8_t*)proc_geo->parameters;
+        delete[] (uint8_t*)proc_geo->parameters;
         delete proc_geo;
     }
     
@@ -198,7 +198,7 @@ UPtr<VoxelModel> load_octree(DMirLookups* lookups, std::string path, int mode = 
                     
                     if (count > octree->count) {
                         // Recursion detected, can't proceed
-                        delete new_data;
+                        delete[] new_data;
                         return model;
                     }
                 }
@@ -214,7 +214,7 @@ UPtr<VoxelModel> load_octree(DMirLookups* lookups, std::string path, int mode = 
             }
         }
         
-        delete file_data;
+        delete[] file_data;
         
         octree->addr = addr;
         octree->mask = mask;
