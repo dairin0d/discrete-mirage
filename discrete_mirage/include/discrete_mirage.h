@@ -207,6 +207,32 @@ typedef struct DMirGeometry {
     int32_t (*evaluate)(void* geometry, DMirNodeBox* node_box, DMirAddress* data_ref);
 } DMirGeometry;
 
+// A utility struct for general-purpose hierarchy walks.
+// * level_limit: limits the depth of traversal (use
+//   a negative value to always traverse to leaf nodes)
+// * level_max: the max depth/level encountered so far
+// * node_count: number of nodes encountered so far
+// * leaf_count: number of leaves encountered so far
+// * state: optional pointer for custom user data
+// * visit: the callback with the user logic
+// * node_box: visited node's bounding box
+// * data_ref: visited node's voxel data reference
+// * is_leaf: whether the visited node is a leaf
+// * mask: visited node's child mask
+typedef struct DMirVisitor DMirVisitor;
+struct DMirVisitor {
+    int32_t level_limit;
+    uint32_t level_max;
+    uint64_t node_count;
+    uint64_t leaf_count;
+    void* state;
+    DMirBool (*visit)(DMirVisitor* visitor);
+    DMirNodeBox node_box;
+    DMirAddress data_ref;
+    DMirBool is_leaf;
+    uint8_t mask;
+};
+
 // Note: values are treated as inclusive [min, max] range
 typedef struct DMirRect {
     int32_t min_x;
@@ -441,6 +467,8 @@ DMirDepth dmir_z_to_depth(DMirBatcher* batcher, float z);
 
 // Checks whether a screen-space quad at a given depth is fully occluded
 DMirBool dmir_is_occluded_quad(DMirFramebuffer* framebuffer, DMirRect rect, DMirDepth depth);
+
+void dmir_visit(DMirGeometry* geometry, DMirAddress node_ref, DMirVisitor* visitor, DMirBool reverse);
 
 // ===================================================== //
 
