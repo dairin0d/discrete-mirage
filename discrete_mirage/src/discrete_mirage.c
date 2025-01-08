@@ -2321,6 +2321,10 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer_ptr,
     
     if (!isfinite(bounds.max_z - bounds.min_z)) return;
     
+    if ((effects.max_level < 0) | (effects.max_level > DMIR_LEVEL_MAX)) {
+        effects.max_level = DMIR_LEVEL_MAX;
+    }
+    
     effects.dilation_abs = MAX(effects.dilation_abs, 0) - 0.5f;
     effects.dilation_rel = CLAMP(effects.dilation_rel, 0, 1) * 0.5f;
     

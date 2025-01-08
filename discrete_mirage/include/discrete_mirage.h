@@ -133,6 +133,9 @@ typedef uint64_t DMirAddress;
 
 typedef int32_t DMirAffineID;
 
+const int32_t DMIR_LEVEL_BITS = 5;
+const int32_t DMIR_LEVEL_MAX = 32;
+
 // Axis traversal orders. Declared as #define instead
 // of const to be usable in a switch statement
 #define DMIR_XYZ 0
