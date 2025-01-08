@@ -33,72 +33,15 @@
 #define RGFW_IMPLEMENTATION
 #include <RGFW.h>
 
-#include "math_utils.hpp"
-
 #include <discrete_mirage.h>
 
-// Some shorthands for convenience
-template <typename T> using DPtr = std::unique_ptr<T>;
-template <typename T> using UPtr = std::unique_ptr<T, void(*)(T*)>;
+#include "example_implementations.c"
 
-#define PTR_OFFSET(array, offset) ((typeof(array))(((char*)(array)) + (offset)))
-#define PTR_INDEX(array, index) PTR_OFFSET((array), ((index) * (array##_stride)))
+#include "math_utils.cpp"
+#include "helper_utils.cpp"
 
-typedef struct DMirVoxelData {
-    void (*get)(void* data, DMirAddress address, void* out);
-    uint32_t data_count;
-    uint32_t item_size; // in bytes
-} DMirVoxelData;
+#include "demo_models.cpp"
 
-typedef struct DMirSimpleData {
-    DMirVoxelData api;
-    uint8_t* palette;
-    uint8_t* items;
-    uint32_t items_stride; // in bytes
-    uint32_t palette_count;
-} DMirSimpleData;
-
-// addr: address (index) of a node's first child.
-// mask: node's octant mask (zero mask indicates a leaf).
-// data: node's voxel data.
-// *_stride: offset (in bytes) between each item (this way,
-// addr/mask/data can be stored as separate arrays or as
-// one interleaved array).
-// count: number of nodes (used to check if node addresses
-// stay within array bounds; see DMIR_VALIDATE_ADDRESSES).
-// max_level: if >= 0, limits the depth of octree traversal.
-// is_packed: whether the octree nodes are packed (empty
-// children are not stored) or sparse (always 8 children).
-typedef struct DMirOctree {
-    DMirGeometry geometry;
-    DMirLookups* lookups;
-    uint32_t* addr;
-    uint8_t* mask;
-    uint32_t addr_stride;
-    uint32_t mask_stride;
-    uint32_t count;
-    DMirBool is_packed;
-} DMirOctree;
-
-struct ProceduralGeometry {
-    DMirGeometry geometry;
-};
-
-struct ProceduralVoxelData {
-    DMirVoxelData api;
-};
-
-struct VoxelModel {
-    DMirGeometry* geometry;
-    DMirVoxelData* data;
-    int geometry_type;
-    int data_type;
-    std::vector<DMirAddress> roots;
-};
-
-// Enable this if you aren't sure that your octree(s)
-// contain valid node addresses everywhere
-#define DMIR_VALIDATE_ADDRESSES
 
 #ifndef RGFW_BUFFER
 UPtr<GLuint> MakeGLTexture() {
@@ -113,14 +56,6 @@ UPtr<GLuint> MakeGLTexture() {
 int64_t get_time_ms() {
     return RGFW_getTimeNS() / 1000000;
 }
-
-struct RGB24 {
-    uint8_t r, g, b;
-};
-
-struct RGBA32 {
-    uint8_t r, g, b, a;
-};
 
 struct Object3D {
     int geometry_id;
@@ -188,326 +123,6 @@ struct ProgramState {
     std::vector<int> accum_weights_exp;
 };
 
-double global_time = 0;
-
-void simple_data_get(void* data_ptr, DMirAddress address, void* out) {
-    DMirSimpleData* data = (DMirSimpleData*)data_ptr;
-    uint8_t* item = PTR_INDEX(data->items, address);
-    memcpy(out, item, data->api.item_size);
-}
-
-void simple_data_get_rgb(void* data_ptr, DMirAddress address, void* out) {
-    DMirSimpleData* data = (DMirSimpleData*)data_ptr;
-    uint8_t* item = PTR_INDEX(data->items, address);
-    ((RGB24*)out)[0] = ((RGB24*)item)[0];
-}
-
-void procedural_data_get_rgb(void* data_ptr, DMirAddress address, void* out) {
-    uint8_t* bytes = (uint8_t*)(&address);
-    ((RGB24*)out)->r = bytes[0] ^ bytes[3] ^ bytes[6];
-    ((RGB24*)out)->g = bytes[1] ^ bytes[4] ^ bytes[7];
-    ((RGB24*)out)->b = bytes[2] ^ bytes[5];
-}
-
-float procedural_heightmap(float x, float y) {
-    int32_t ix = (int32_t)x;
-    int32_t iy = (int32_t)y;
-    float tx = x - ix;
-    float ty = y - iy;
-    int x0 = (ix + 0);
-    int x1 = (ix + 1);
-    int y0 = (iy + 0);
-    int y1 = (iy + 1);
-    uint32_t k0 = (0x01000193 ^ x0) * 0x01000193;
-    uint32_t k1 = (0x01000193 ^ x1) * 0x01000193;
-    uint32_t k00 = (k0 ^ y0*2166136261) * 0x01000193;
-    uint32_t k01 = (k1 ^ y0*2166136261) * 0x01000193;
-    uint32_t k10 = (k0 ^ y1*2166136261) * 0x01000193;
-    uint32_t k11 = (k1 ^ y1*2166136261) * 0x01000193;
-    float h_scale = 1.0f / (float)0xFFFF;
-    float h00 = (k00 & 0xFFFF) * h_scale;
-    float h01 = (k01 & 0xFFFF) * h_scale;
-    float h10 = (k10 & 0xFFFF) * h_scale;
-    float h11 = (k11 & 0xFFFF) * h_scale;
-    float txm = (3 - 2*tx)*tx*tx;
-    float tym = (3 - 2*ty)*ty*ty;
-    float h0 = h00 * (1 - txm) + h01 * txm;
-    float h1 = h10 * (1 - txm) + h11 * txm;
-    return h0 * (1 - tym) + h1 * tym;
-}
-
-const float sqrt3 = sqrtf(3);
-
-int32_t procedural_evaluate(void* geometry, DMirNodeBox* node_box, DMirAddress* data_ref) {
-    float scale = 1.0f / (1 << node_box->level);
-    float x = (node_box->x + 0.5f) * scale;
-    float y = (node_box->y + 0.5f) * scale;
-    float z = (node_box->z + 0.5f) * scale;
-    float conservative_distance = scale * (0.5f * sqrt3);
-    
-    float anim_time = global_time * 0.1;
-    float terrain_detail = 4;
-    float terrain_x = (x + anim_time) * terrain_detail;
-    float terrain_y = (z + anim_time) * terrain_detail;
-    float terrain_height = 0.25f * procedural_heightmap(terrain_x, terrain_y);
-    // Height difference is not a Euclidean distance, so use a larger margin
-    float terrain_distance = (y - terrain_height) - conservative_distance * 2;
-    
-    float radius = 0.25f;
-    struct vec3 center = {.x = 0.5f, .y = 0.65f, .z = 0.5f};
-    struct vec3 point = {.x = x, .y = y, .z = z};
-    float distance_to_center = psvec3_distance(&point, &center);
-    float sphere_distance = (distance_to_center - radius) - conservative_distance;
-    
-    float dist = std::min(terrain_distance, sphere_distance);
-    
-    float v = y;
-    *data_ref = 0;
-    uint8_t* data_rgb = (uint8_t*)data_ref;
-    data_rgb[0] = (uint8_t)(v*v * 255.0f);
-    data_rgb[1] = (uint8_t)(v * 255.0f);
-    data_rgb[2] = (uint8_t)(v * 0.0f);
-    
-    return (dist <= 0 ? 1 : -1);
-}
-
-DMirBool octree_traverse_start(void* geometry, uint64_t node_ref, uint64_t data_ref, DMirTraversal* dst) {
-    DMirOctree* octree = (DMirOctree*)geometry;
-    
-    #ifdef DMIR_VALIDATE_ADDRESSES
-    if (node_ref >= octree->count) return false;
-    #endif
-    
-    dst->mask[0] = *PTR_INDEX(octree->mask, node_ref);
-    dst->node[0] = node_ref;
-    dst->data[0] = node_ref;
-    
-    return true;
-}
-
-DMirBool octree_traverse_next(void* geometry, DMirTraversal* src, int32_t index, DMirTraversal* dst) {
-    DMirOctree* octree = (DMirOctree*)geometry;
-    
-    uint8_t mask = src->mask[index];
-    uint64_t node = *PTR_INDEX(octree->addr, src->node[index]);
-    
-    if (octree->is_packed) {
-        for (int octant = 0; octant < 8; octant++) {
-            if (mask & (1 << octant)) {
-                #ifdef DMIR_VALIDATE_ADDRESSES
-                if (node >= octree->count) return false;
-                #endif
-                dst->mask[octant] = *PTR_INDEX(octree->mask, node);
-                dst->node[octant] = node;
-                dst->data[octant] = node;
-                node++;
-            }
-        }
-    } else {
-        for (int octant = 0; octant < 8; octant++) {
-            if (mask & (1 << octant)) {
-                #ifdef DMIR_VALIDATE_ADDRESSES
-                if (node >= octree->count) return false;
-                #endif
-                dst->mask[octant] = *PTR_INDEX(octree->mask, node);
-                dst->node[octant] = node;
-                dst->data[octant] = node;
-            }
-            node++;
-        }
-    }
-    
-    return true;
-}
-
-const int MODEL_GEOMETRY_OCTREE = 1;
-const int MODEL_DATA_SIMPLE = 1;
-
-const int MODEL_GEOMETRY_PROCEDURAL = 2;
-const int MODEL_DATA_PROCEDURAL = 2;
-
-const int OCTREE_LOAD_RAW = 0;
-const int OCTREE_LOAD_SPLIT = 1;
-const int OCTREE_LOAD_PACKED = 2;
-
-// int octree_load_mode = OCTREE_LOAD_RAW;
-// int octree_load_mode = OCTREE_LOAD_SPLIT;
-int octree_load_mode = OCTREE_LOAD_PACKED;
-
-static void read_file(std::string path, int* file_size, char** data) {
-    file_size[0] = -1;
-    data[0] = nullptr;
-    
-    std::ifstream file(path, std::ios::binary);
-    
-    if (!file) {
-        std::cerr << "Failed to open file: " << path << std::endl;
-        return;
-    }
-    
-    file.seekg(0, std::ios::end);
-    file_size[0] = file.tellg();
-    file.seekg(0, std::ios::beg);
-    
-    if ((file_size[0] > 0) && (file_size[0] < UINT32_MAX)) {
-        data[0] = new char[file_size[0]];
-        file.read(data[0], (std::streamsize)file_size[0]);
-    } else {
-        std::cerr << "Failed to seek or file is too big: " << path << std::endl;
-    }
-    
-    file.close();
-}
-
-void delete_model(VoxelModel* model) {
-    if (model->data_type == MODEL_DATA_SIMPLE) {
-        delete (DMirSimpleData*)model->data;
-    } else if (model->data_type == MODEL_DATA_PROCEDURAL) {
-        delete (ProceduralVoxelData*)model->data;
-    }
-    
-    if (model->geometry_type == MODEL_GEOMETRY_OCTREE) {
-        DMirOctree* octree = (DMirOctree*)model->geometry;
-        delete octree->addr;
-        delete octree;
-    } else if (model->geometry_type == MODEL_GEOMETRY_PROCEDURAL) {
-        delete (ProceduralGeometry*)model->geometry;
-    }
-    
-    delete model;
-}
-
-DMirOctree* create_octree(DMirLookups* lookups) {
-    auto octree = new DMirOctree();
-    octree->is_packed = false;
-    octree->count = 0;
-    octree->addr = nullptr;
-    octree->mask = nullptr;
-    octree->addr_stride = 0;
-    octree->mask_stride = 0;
-    octree->lookups = lookups;
-    octree->geometry.traverse_start = octree_traverse_start;
-    octree->geometry.traverse_next = octree_traverse_next;
-    octree->geometry.evaluate = nullptr;
-    return octree;
-}
-
-UPtr<VoxelModel> load_octree(DMirLookups* lookups, std::string path, int mode) {
-    int file_size = 0;
-    char* file_data = nullptr;
-    read_file(path, &file_size, &file_data);
-    
-    // This demo expects each node layout to be:
-    // uint32 address + uint8 mask + uint8*3 rgb
-    const int node_size = 8;
-    
-    if ((file_data == nullptr) || (file_size < 8*node_size)) {
-        return UPtr<VoxelModel>(nullptr, nullptr);
-    }
-    
-    auto voxel_count = file_size / node_size;
-    
-    auto voxel_data = new DMirSimpleData();
-    voxel_data->api.get = simple_data_get_rgb;
-    voxel_data->api.data_count = voxel_count;
-    voxel_data->api.item_size = 3;
-    voxel_data->items_stride = 8;
-    voxel_data->items = ((uint8_t*)file_data) + 5;
-    voxel_data->palette = nullptr;
-    voxel_data->palette_count = 0;
-    
-    auto octree = create_octree(lookups);
-    octree->is_packed = false;
-    octree->count = voxel_count;
-    octree->addr = (uint32_t*)file_data;
-    octree->mask = ((uint8_t*)file_data) + 4;
-    octree->addr_stride = 8;
-    octree->mask_stride = 8;
-    
-    auto model = UPtr<VoxelModel>(new VoxelModel(), delete_model);
-    model->data = (DMirVoxelData*)voxel_data;
-    model->data_type = MODEL_DATA_SIMPLE;
-    model->geometry = (DMirGeometry*)octree;
-    model->geometry_type = MODEL_GEOMETRY_OCTREE;
-    model->roots.push_back(0);
-    
-    if (mode != OCTREE_LOAD_RAW) {
-        char* new_data = new char[octree->count * (4 + 1 + 3)];
-        uint32_t* addr = (uint32_t*)new_data;
-        uint8_t* mask = (uint8_t*)(((char*)addr) + octree->count*4);
-        RGB24* color = (RGB24*)(mask + octree->count*1);
-        
-        if (mode == OCTREE_LOAD_PACKED) {
-            int count = 1;
-            addr[0] = 0;
-            
-            for (int index = 0; index < count; index++) {
-                auto node_address = *PTR_INDEX(octree->addr, addr[index]);
-                auto node_mask = *PTR_INDEX(octree->mask, addr[index]);
-                auto node_color = *((RGB24*)PTR_INDEX(voxel_data->items, addr[index]));
-                addr[index] = count;
-                mask[index] = node_mask;
-                color[index] = node_color;
-                
-                for (int octant = 0; octant < 8; octant++) {
-                    if ((node_mask & (1 << octant)) == 0) continue;
-                    
-                    addr[count] = node_address + octant;
-                    count++;
-                    
-                    if (count > octree->count) {
-                        // Recursion detected, can't proceed
-                        delete new_data;
-                        return model;
-                    }
-                }
-            }
-            
-            octree->count = count;
-            octree->is_packed = true;
-        } else {
-            for (int i = 0; i < octree->count; i++) {
-                addr[i] = *PTR_INDEX(octree->addr, i);
-                mask[i] = *PTR_INDEX(octree->mask, i);
-                color[i] = *((RGB24*)PTR_INDEX(voxel_data->items, i));
-            }
-        }
-        
-        delete file_data;
-        
-        octree->addr = addr;
-        octree->mask = mask;
-        octree->addr_stride = 4;
-        octree->mask_stride = 1;
-        
-        voxel_data->items = (uint8_t*)color;
-        voxel_data->items_stride = 3;
-    }
-    
-    return model;
-}
-
-UPtr<VoxelModel> make_procedural_geometry() {
-    auto voxel_data = new ProceduralVoxelData();
-    voxel_data->api.get = procedural_data_get_rgb;
-    voxel_data->api.data_count = 0;
-    voxel_data->api.item_size = 3;
-    
-    auto proc_geo = new ProceduralGeometry();
-    proc_geo->geometry.traverse_start = nullptr;
-    proc_geo->geometry.traverse_next = nullptr;
-    proc_geo->geometry.evaluate = procedural_evaluate;
-    
-    auto model = UPtr<VoxelModel>(new VoxelModel(), delete_model);
-    model->data = (DMirVoxelData*)voxel_data;
-    model->data_type = MODEL_DATA_PROCEDURAL;
-    model->geometry = (DMirGeometry*)proc_geo;
-    model->geometry_type = MODEL_GEOMETRY_PROCEDURAL;
-    model->roots.push_back(0);
-    
-    return model;
-}
-
 struct mat4 calculate_projection_matrix(ProgramState& state) {
     const float zoom_factor = 0.125f;
     float zoom_scale = pow(2.0f, -state.cam_zoom * zoom_factor);
@@ -533,11 +148,23 @@ void create_scene(ProgramState& state, std::string model_path) {
     int grid_extent = 0;
     float grid_offset = 1.2f;
     
-    auto model = load_octree(lookups, model_path, octree_load_mode);
+    auto model = load_octree(lookups, model_path);
     DMirEffects effects = {.max_level = -1, .dilation_abs = 0, .dilation_rel = 0};
     
     if (!model) {
-        model = make_procedural_geometry();
+        model = make_procedural_geometry(procedural_sampler, sizeof(ProceduralParameters));
+        
+        auto proc_geo = (ProceduralGeometry*)model->geometry;
+        auto params = (ProceduralParameters*)proc_geo->parameters;
+        *params = (ProceduralParameters){
+            .animation_time = 0,
+            .animation_speed = 0.1f,
+            .terrain_detail = 4,
+            .terrain_height = 0.25f,
+            .sphere_radius = 0.25f,
+            .sphere_center = svec3(0.5f, 0.65f, 0.5f),
+        };
+        
         state.max_level = 8;
         state.splat_shape = DMIR_SHAPE_CIRCLE;
     } else {
@@ -821,7 +448,22 @@ void render_scene_to_buffer(ProgramState& state, RGBA32* pixels, int stride) {
     state.accum_index = (state.accum_index + 1) % state.accum_buffers.size();
 }
 
+void update_scene(ProgramState& state) {
+    auto time = get_time_ms() / 1000.0;
+    
+    for (auto it = state.models.begin(); it != state.models.end(); ++it) {
+        auto model = it->get();
+        if (model->geometry_type == MODEL_GEOMETRY_PROCEDURAL) {
+            auto proc_geo = (ProceduralGeometry*)model->geometry;
+            auto params = (ProceduralParameters*)proc_geo->parameters;
+            params->animation_time = time * params->animation_speed;
+        }
+    }
+}
+
 int64_t render_scene(ProgramState& state) {
+    update_scene(state);
+    
     auto time = get_time_ms();
     
     RGBA32* pixels = state.render_buffer.data();
@@ -1119,8 +761,6 @@ void main_loop(ProgramState& state) {
         RGFW_window_swapBuffers(window);
         
         auto time = get_time_ms();
-        
-        global_time = time / 1000.0;
         
         if ((time - last_title_update > frame_time_update_period) & (accum_count > 0)) {
             last_title_update = time;

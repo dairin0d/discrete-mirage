@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Zlib
 // SPDX-FileCopyrightText: 2024 dairin0d https://github.com/dairin0d
 
+#pragma once
+
 extern "C" {
 #include <mathc.h>
 }
