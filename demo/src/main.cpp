@@ -94,6 +94,8 @@ struct ProgramState {
     int screen_height;
     bool is_running;
     
+    bool is_test_scene;
+    
     int frame_count;
     
     struct vec3 cam_pos;
@@ -143,15 +145,10 @@ struct mat4 calculate_projection_matrix(ProgramState& state) {
     return smat4_inverse(view_matrix);
 }
 
-void create_scene(ProgramState& state, std::string model_path) {
+void load_models(ProgramState& state, std::string model_path) {
     auto lookups = state.dmir_lookups.get();
     
-    auto geometry_id = 0;
-    int grid_extent = 0;
-    float grid_offset = 1.2f;
-    
     auto model = load_octree(lookups, model_path);
-    DMirEffects effects = {.max_level = -1, .dilation_abs = 0, .dilation_rel = 0};
     
     if (!model) {
         model = make_procedural_geometry(procedural_sampler, sizeof(ProceduralParameters));
@@ -171,12 +168,19 @@ void create_scene(ProgramState& state, std::string model_path) {
         
         state.max_level = 8;
         state.splat_shape = DMIR_SHAPE_CIRCLE;
-    } else {
-        grid_extent = 2;
     }
     
     state.models.push_back(std::move(model));
+}
+
+void recreate_scene(ProgramState& state) {
+    state.objects.clear();
     
+    int grid_extent = (state.models[0]->geometry_type == MODEL_GEOMETRY_PROCEDURAL ? 0 : 10);
+    float grid_offset = (state.is_test_scene ? 1.2f : 2.0f);
+    
+    DMirEffects effects = {.max_level = -1, .dilation_abs = 0, .dilation_rel = 0};
+    int geometry_id = 0;
     for (int gz = grid_extent; gz >= -grid_extent; gz--) {
         for (int gx = grid_extent; gx >= -grid_extent; gx--) {
             auto object3d = new Object3D();
@@ -777,6 +781,8 @@ void main_loop(ProgramState& state) {
     while (state.is_running && !RGFW_window_shouldClose(window)) {
         process_events(state);
         
+        recreate_scene(state);
+        
         accum_time += render_scene(state);
         accum_count++;
         
@@ -869,7 +875,7 @@ int main(int argc, char* argv[]) {
     
     state.frustum = {
         .min_depth = 0.001f,
-        .max_depth = 10.0f,
+        .max_depth = 100.0f,
         .focal_extent = 1,
         .focal_depth = 1,
         .perspective = 0,
@@ -908,14 +914,15 @@ int main(int argc, char* argv[]) {
     make_accum_weights(state.accum_weights_lin, state.accum_count, 1.0f, 1 << state.accum_shift);
     make_accum_weights(state.accum_weights_exp, state.accum_count, 0.65f, 1 << state.accum_shift);
     
-    std::string model_path;
-    if (argc != 2) {
+    if (argc <= 1) {
         std::cerr << "Usage: " << argv[0] << " <file_path>" << std::endl;
-    } else {
-        model_path = argv[1];
     }
     
-    create_scene(state, model_path);
+    std::string model_path = (argc > 1 ? argv[1] : "");
+    
+    state.is_test_scene = (argc > 2) && (strcmp(argv[2], "TEST_SCENE") == 0);
+    
+    load_models(state, model_path);
     
     main_loop(state);
     
