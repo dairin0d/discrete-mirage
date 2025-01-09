@@ -15,11 +15,16 @@
 #include "math_utils.cpp"
 #include "helper_utils.cpp"
 
+#include "voxel_data_processing.cpp"
+#include "geometry_processing.cpp"
+
 const int MODEL_GEOMETRY_OCTREE = 1;
 const int MODEL_DATA_SIMPLE = 1;
 
 const int MODEL_GEOMETRY_PROCEDURAL = 2;
 const int MODEL_DATA_PROCEDURAL = 2;
+
+const int MODEL_GEOMETRY_DAG = 3;
 
 const int OCTREE_LOAD_RAW = 0;
 const int OCTREE_LOAD_SPLIT = 1;
@@ -30,6 +35,7 @@ struct VoxelModel {
     DMirVoxelData* data;
     int geometry_type;
     int data_type;
+    bool is_data_separate;
     std::vector<DMirAddress> roots;
 };
 
@@ -43,20 +49,34 @@ struct ProceduralParameters {
 };
 
 void delete_model(VoxelModel* model) {
-    if (model->data_type == MODEL_DATA_SIMPLE) {
-        delete (DMirSimpleData*)model->data;
-    } else if (model->data_type == MODEL_DATA_PROCEDURAL) {
-        delete (ProceduralVoxelData*)model->data;
+    if (model->data) {
+        if (model->data_type == MODEL_DATA_SIMPLE) {
+            auto simple_data = (DMirSimpleData*)model->data;
+            if (model->is_data_separate) {
+                if (simple_data->items) delete[] simple_data->items;
+                if (simple_data->palette) delete[] simple_data->palette;
+            }
+            delete simple_data;
+        } else if (model->data_type == MODEL_DATA_PROCEDURAL) {
+            auto proc_data = (ProceduralVoxelData*)model->data;
+            delete proc_data;
+        }
     }
     
-    if (model->geometry_type == MODEL_GEOMETRY_OCTREE) {
-        auto octree = (DMirOctree*)model->geometry;
-        delete octree->addr;
-        delete octree;
-    } else if (model->geometry_type == MODEL_GEOMETRY_PROCEDURAL) {
-        auto proc_geo = (ProceduralGeometry*)model->geometry;
-        delete[] (uint8_t*)proc_geo->parameters;
-        delete proc_geo;
+    if (model->geometry) {
+        if (model->geometry_type == MODEL_GEOMETRY_OCTREE) {
+            auto octree = (DMirOctree*)model->geometry;
+            delete octree->addr;
+            delete octree;
+        } else if (model->geometry_type == MODEL_GEOMETRY_PROCEDURAL) {
+            auto proc_geo = (ProceduralGeometry*)model->geometry;
+            delete[] (uint8_t*)proc_geo->parameters;
+            delete proc_geo;
+        } else if (model->geometry_type == MODEL_GEOMETRY_DAG) {
+            auto dag = (DMirVoxelDAG*)model->geometry;
+            delete[] dag->nodes;
+            delete dag;
+        }
     }
     
     delete model;
@@ -164,12 +184,14 @@ UPtr<VoxelModel> load_octree(DMirLookups* lookups, std::string path, int mode = 
     octree->geometry.traverse_start = octree_traverse_start;
     octree->geometry.traverse_next = octree_traverse_next;
     octree->geometry.evaluate = nullptr;
+    octree->geometry.max_level = -1;
     
     auto model = UPtr<VoxelModel>(new VoxelModel(), delete_model);
     model->data = (DMirVoxelData*)voxel_data;
     model->data_type = MODEL_DATA_SIMPLE;
     model->geometry = (DMirGeometry*)octree;
     model->geometry_type = MODEL_GEOMETRY_OCTREE;
+    model->is_data_separate = false;
     model->roots.push_back(0);
     
     if (mode != OCTREE_LOAD_RAW) {
@@ -238,6 +260,7 @@ UPtr<VoxelModel> make_procedural_geometry(ProceduralSampler sampler, uint32_t pa
     proc_geo->geometry.traverse_start = nullptr;
     proc_geo->geometry.traverse_next = nullptr;
     proc_geo->geometry.evaluate = procedural_evaluate;
+    proc_geo->geometry.max_level = -1;
     proc_geo->parameters = new uint8_t[params_size];
     proc_geo->sampler = sampler;
     
@@ -246,7 +269,61 @@ UPtr<VoxelModel> make_procedural_geometry(ProceduralSampler sampler, uint32_t pa
     model->data_type = MODEL_DATA_PROCEDURAL;
     model->geometry = (DMirGeometry*)proc_geo;
     model->geometry_type = MODEL_GEOMETRY_PROCEDURAL;
+    model->is_data_separate = false;
     model->roots.push_back(0);
+    
+    return model;
+}
+
+UPtr<VoxelModel> convert_to_dag(DMirLookups* lookups, DMirGeometry* geometry,
+    DMirVoxelData* voxel_data, DMirAddress root, bool compact)
+{
+    auto model = UPtr<VoxelModel>(new VoxelModel(), delete_model);
+    
+    if (voxel_data) {
+        std::deque<uint8_t> extracted_data;
+        dmir::extract_voxel_data(geometry, root, voxel_data, 0, 3, extracted_data);
+        
+        uint8_t* data_array = new uint8_t[extracted_data.size()];
+        std::copy(extracted_data.begin(), extracted_data.end(), data_array);
+        
+        auto dag_voxel_data = new DMirSimpleData();
+        dag_voxel_data->api.get = simple_data_get_rgb;
+        dag_voxel_data->api.data_count = extracted_data.size() / 3;
+        dag_voxel_data->api.item_size = 3;
+        dag_voxel_data->items_stride = 3;
+        dag_voxel_data->items = data_array;
+        dag_voxel_data->palette = nullptr;
+        dag_voxel_data->palette_count = 0;
+        
+        model->data = (DMirVoxelData*)dag_voxel_data;
+        model->data_type = MODEL_DATA_SIMPLE;
+        model->is_data_separate = true;
+    } else {
+        auto dag_voxel_data = new ProceduralVoxelData();
+        dag_voxel_data->api.get = procedural_data_get_rgb;
+        dag_voxel_data->api.data_count = 0;
+        dag_voxel_data->api.item_size = 3;
+        
+        model->data = (DMirVoxelData*)dag_voxel_data;
+        model->data_type = MODEL_DATA_PROCEDURAL;
+        model->is_data_separate = false;
+    }
+    
+    auto dag = new DMirVoxelDAG();
+    dag->lookups = lookups;
+    dag->geometry.traverse_start = dag_traverse_start;
+    dag->geometry.traverse_next = dag_traverse_next;
+    dag->geometry.evaluate = nullptr;
+    dag->geometry.max_level = -1;
+    
+    dmir::DAGBuilder dag_builder;
+    dag_builder.add(geometry, root);
+    dag_builder.build(compact, *dag, model->roots);
+    dag_builder.report();
+    
+    model->geometry = (DMirGeometry*)dag;
+    model->geometry_type = MODEL_GEOMETRY_DAG;
     
     return model;
 }

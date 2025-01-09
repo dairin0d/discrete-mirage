@@ -19,6 +19,7 @@
 // * F3 - render leaf nodes as squares
 // * F4 - render leaf nodes as circles
 // * F5 - render leaf nodes as cubes
+// * F8 - toggle between original and DAG models
 // * F12 - toggle "antialiasing/motion-blur" mode
 // * Esc - quit
 
@@ -41,7 +42,6 @@
 #include "helper_utils.cpp"
 
 #include "demo_models.cpp"
-
 
 #ifndef RGFW_BUFFER
 UPtr<GLuint> MakeGLTexture() {
@@ -112,6 +112,8 @@ struct ProgramState {
     
     std::vector<DPtr<Object3D>> objects;
     std::vector<UPtr<VoxelModel>> models;
+    std::vector<UPtr<VoxelModel>> dag_models;
+    bool use_dag;
     
     bool use_accumulation;
     int accum_count;
@@ -165,6 +167,8 @@ void create_scene(ProgramState& state, std::string model_path) {
             .sphere_center = svec3(0.5f, 0.65f, 0.5f),
         };
         
+        model->geometry->max_level = 8;
+        
         state.max_level = 8;
         state.splat_shape = DMIR_SHAPE_CIRCLE;
     } else {
@@ -209,6 +213,20 @@ void create_scene(ProgramState& state, std::string model_path) {
     }
 }
 
+void switch_dag_mode(ProgramState& state) {
+    state.use_dag = !state.use_dag;
+    
+    if (state.use_dag && (state.dag_models.size() != state.models.size())) {
+        auto lookups = state.dmir_lookups.get();
+        state.dag_models.clear();
+        for (auto it = state.models.begin(); it != state.models.end(); ++it) {
+            auto model = (*it).get();
+            auto dag_model = convert_to_dag(lookups, model->geometry, model->data, model->roots[0], true);
+            state.dag_models.push_back(std::move(dag_model));
+        }
+    }
+}
+
 void render_scene_subset(ProgramState& state, struct mat4 proj_matrix, int imin, int imax) {
     struct vec3 cage[8];
     
@@ -217,6 +235,8 @@ void render_scene_subset(ProgramState& state, struct mat4 proj_matrix, int imin,
     
     if (imin < 0) imin = 0;
     if (imax >= state.objects.size()) imax = state.objects.size() - 1;
+    
+    auto models = (state.use_dag ? state.dag_models : state.models).data();
     
     for (int index = imin; index <= imax; index++) {
         auto object3d = state.objects[index].get();
@@ -237,7 +257,7 @@ void render_scene_subset(ProgramState& state, struct mat4 proj_matrix, int imin,
         
         if (object3d->geometry_id >= 0) {
             int group = index;
-            auto model = state.models[object3d->geometry_id].get();
+            auto model = models[object3d->geometry_id].get();
             DMirAddress root = model->roots[object3d->root];
             dmir_batcher_add(batcher, framebuffer,
                 group, (float*)cage, model->geometry, root, effects);
@@ -379,7 +399,7 @@ void render_scene_to_buffer(ProgramState& state, RGBA32* pixels, int stride) {
     auto accum_weights_exp = state.accum_weights_exp.data();
     
     auto scene_objects = state.objects.data();
-    auto models = state.models.data();
+    auto models = (state.use_dag ? state.dag_models : state.models).data();
     
     int buf_stride = dmir_row_size(framebuffer);
     for (int y = 0; y < state.screen_height; y++) {
@@ -639,6 +659,9 @@ void process_event(ProgramState& state) {
         case RGFW_F5:
             state.splat_shape = DMIR_SHAPE_CUBE;
             break;
+        case RGFW_F8:
+            switch_dag_mode(state);
+            break;
         case RGFW_F12:
             state.use_accumulation = !state.use_accumulation;
             break;
@@ -773,7 +796,15 @@ void main_loop(ProgramState& state) {
             frame_time_ms = std::to_string(frame_time) + " ms";
         }
         
+        std::string model_type = "OCT";
+        if (state.use_dag) {
+            model_type = "DAG";
+        } else if (state.models[0]->geometry_type == MODEL_GEOMETRY_PROCEDURAL) {
+            model_type = "PRC";
+        }
+        
         std::string title = state.window_title + ": " +
+            model_type + " " +
             frame_time_ms + ", " +
             std::to_string(state.thread_count) + " thread(s)";
         RGFW_window_setName(window, (char*)(title.c_str()));

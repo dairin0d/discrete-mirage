@@ -196,16 +196,38 @@ typedef struct DMirNodeBox {
 //   and return a number indicating whether the node
 //   should be skipped (-1), splatted (0) or subdivided
 //   further (1).
+// * max_level: if >= 0, limits the traversal depth
 // For procedural volumes, the evaluate callback should
 // be used; for everything else, use traverse_start
 // and traverse_next.
 // The semantics of node references and data references
 // are entirely up to the implementation.
 typedef struct DMirGeometry {
-    DMirBool (*traverse_start)(void* geometry, DMirAddress node_ref, DMirAddress data_ref, DMirTraversal* dst);
-    DMirBool (*traverse_next)(void* geometry, DMirTraversal* src, int32_t index, DMirTraversal* dst);
-    int32_t (*evaluate)(void* geometry, DMirNodeBox* node_box, DMirAddress* data_ref);
+    DMirBool (*traverse_start)(const void* geometry, DMirAddress node_ref, DMirAddress data_ref, DMirTraversal* dst);
+    DMirBool (*traverse_next)(const void* geometry, DMirTraversal* src, int32_t index, DMirTraversal* dst);
+    int32_t (*evaluate)(const void* geometry, DMirNodeBox* node_box, DMirAddress* data_ref);
+    int32_t max_level;
 } DMirGeometry;
+
+// A utility struct for general-purpose hierarchy walks.
+// * subtree_size: visited node's total child count
+// * subnode_masks: masks of the node's children
+// * sub_node_refs: new node references
+// * sub_data_refs: new voxel data references
+// * node_box: visited node's bounding box
+// * data_ref: visited node's voxel data reference
+// * is_leaf: whether the visited node is a leaf
+// * mask: visited node's child mask
+typedef struct DMirVisitorNodeInfo {
+    uint64_t subtree_size;
+    uint64_t subnode_masks;
+    DMirAddress sub_node_refs[8];
+    DMirAddress sub_data_refs[8];
+    DMirNodeBox node_box;
+    DMirAddress data_ref;
+    DMirBool is_leaf;
+    uint8_t mask;
+} DMirVisitorNodeInfo;
 
 // A utility struct for general-purpose hierarchy walks.
 // * level_limit: limits the depth of traversal (use
@@ -215,10 +237,8 @@ typedef struct DMirGeometry {
 // * leaf_count: number of leaves encountered so far
 // * state: optional pointer for custom user data
 // * visit: the callback with the user logic
-// * node_box: visited node's bounding box
-// * data_ref: visited node's voxel data reference
-// * is_leaf: whether the visited node is a leaf
-// * mask: visited node's child mask
+// * node_ref_new: new node reference
+// * data_ref_new: new voxel data reference
 typedef struct DMirVisitor DMirVisitor;
 struct DMirVisitor {
     int32_t level_limit;
@@ -226,11 +246,9 @@ struct DMirVisitor {
     uint64_t node_count;
     uint64_t leaf_count;
     void* state;
-    DMirBool (*visit)(DMirVisitor* visitor);
-    DMirNodeBox node_box;
-    DMirAddress data_ref;
-    DMirBool is_leaf;
-    uint8_t mask;
+    DMirBool (*visit)(DMirVisitor* visitor, DMirVisitorNodeInfo* node_info);
+    DMirAddress node_ref_new;
+    DMirAddress data_ref_new;
 };
 
 // Note: values are treated as inclusive [min, max] range
@@ -468,7 +486,13 @@ DMirDepth dmir_z_to_depth(DMirBatcher* batcher, float z);
 // Checks whether a screen-space quad at a given depth is fully occluded
 DMirBool dmir_is_occluded_quad(DMirFramebuffer* framebuffer, DMirRect rect, DMirDepth depth);
 
-void dmir_visit(DMirGeometry* geometry, DMirAddress node_ref, DMirVisitor* visitor, DMirBool reverse);
+// Traverses the geometry's hierarchy starting from the given node,
+// and invokes the visitor->visit callback for every existing node.
+// Visiting the hierarchy in "reverse depth-first" order is useful
+// to avoid dealing with potential inconsistencies between the child
+// mask and the actual existence of children, and also when subtree
+// size and/or subnode masks are required.
+void dmir_visit(const DMirGeometry* geometry, DMirAddress node_ref, DMirVisitor* visitor, DMirBool reverse);
 
 // ===================================================== //
 

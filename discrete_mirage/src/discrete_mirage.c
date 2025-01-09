@@ -2324,6 +2324,9 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer_ptr,
     if ((effects.max_level < 0) | (effects.max_level > DMIR_LEVEL_MAX)) {
         effects.max_level = DMIR_LEVEL_MAX;
     }
+    if (geometry->max_level >= 0) {
+        effects.max_level = MIN(effects.max_level, geometry->max_level);
+    }
     
     effects.dilation_abs = MAX(effects.dilation_abs, 0) - 0.5f;
     effects.dilation_rel = CLAMP(effects.dilation_rel, 0, 1) * 0.5f;
@@ -3003,48 +3006,53 @@ void dmir_renderer_draw(Renderer* renderer_ptr) {
     }
 }
 
-static DMirBool dmir_visit_recursive(DMirGeometry* geometry, DMirVisitor* visitor,
+static uint64_t visit_recursive(const DMirGeometry* geometry, DMirVisitor* visitor,
     DMirTraversal* src, uint32_t index, DMirNodeBox* node_box, DMirBool reverse)
 {
-    DMirBool is_leaf = (node_box->level >= DMIR_LEVEL_MAX);
-    is_leaf |= (node_box->level == visitor->level_limit);
+    DMirVisitorNodeInfo info;
+    info.is_leaf = (node_box->level >= DMIR_LEVEL_MAX);
+    info.is_leaf |= (node_box->level == visitor->level_limit);
+    info.is_leaf |= (node_box->level == geometry->max_level);
+    info.data_ref = 0;
+    info.mask = 0;
+    info.subtree_size = 1;
+    info.subnode_masks = 0;
     
     DMirTraversal dst = {};
-    DMirAddress data_ref = 0;
     uint8_t mask = 255;
-    uint8_t actual_mask = 0;
     
     if (geometry->evaluate != NULL) {
-        int32_t eval_result = geometry->evaluate(geometry, node_box, &data_ref);
-        if (eval_result < 0) return FALSE;
+        int32_t eval_result = geometry->evaluate(geometry, node_box, &info.data_ref);
+        if (eval_result < 0) return 0;
         
-        is_leaf |= (eval_result == 0);
+        info.is_leaf |= (eval_result == 0);
     } else {
         mask = src->mask[index];
-        data_ref = src->data[index];
+        info.data_ref = src->data[index];
         
-        is_leaf |= (mask == 0);
+        info.is_leaf |= (mask == 0);
         
-        if (!is_leaf) {
-            if (!geometry->traverse_next(geometry, src, index, &dst)) return FALSE;
+        if (!info.is_leaf) {
+            if (!geometry->traverse_next(geometry, src, index, &dst)) return 0;
         }
     }
     
     if (!reverse) {
         visitor->node_count++;
-        if (is_leaf) visitor->leaf_count++;
+        if (info.is_leaf) visitor->leaf_count++;
         if (node_box->level > visitor->level_max) visitor->level_max = node_box->level;
         
         if (visitor->visit) {
-            visitor->mask = mask;
-            visitor->is_leaf = is_leaf;
-            visitor->data_ref = data_ref;
-            visitor->node_box = *node_box;
-            if (!visitor->visit(visitor)) return TRUE;
+            for (int octant = 0; octant < 8; octant++) {
+                info.sub_node_refs[octant] = 0;
+                info.sub_data_refs[octant] = 0;
+            }
+            info.node_box = *node_box;
+            if (!visitor->visit(visitor, &info)) return info.subtree_size;
         }
     }
     
-    if (!is_leaf) {
+    if (!info.is_leaf) {
         int octant_start, octant_end, octant_step;
         if (reverse) {
             octant_start = 7;
@@ -3057,40 +3065,46 @@ static DMirBool dmir_visit_recursive(DMirGeometry* geometry, DMirVisitor* visito
         }
         
         for (int octant = octant_start; octant != octant_end; octant += octant_step) {
+            info.sub_node_refs[octant] = 0;
+            info.sub_data_refs[octant] = 0;
+            
             if ((mask & (1 << octant)) == 0) continue;
+            
             DMirNodeBox child_box;
-            child_box.level = node_box->level + 1;
-            child_box.x = (node_box->x << 1) + ((octant & 0b001) != 0);
-            child_box.y = (node_box->y << 1) + ((octant & 0b010) != 0);
-            child_box.z = (node_box->z << 1) + ((octant & 0b100) != 0);
-            DMirBool exists = dmir_visit_recursive(geometry, visitor, &dst, octant, &child_box, reverse);
-            if (exists) actual_mask |= (1 << octant);
+            node_box_child(node_box, octant, &child_box);
+            
+            uint64_t child_info = visit_recursive(
+                geometry, visitor, &dst, octant, &child_box, reverse);
+            
+            if (child_info) {
+                uint64_t child_subtree_size = child_info & (UINT64_MAX >> 8);
+                uint8_t child_mask = child_info >> (64-8);
+                info.mask |= (1 << octant);
+                info.subtree_size += child_subtree_size;
+                info.subnode_masks |= (uint64_t)(child_mask) << (octant*8);
+                info.sub_node_refs[octant] = visitor->node_ref_new;
+                info.sub_data_refs[octant] = visitor->data_ref_new;
+            }
         }
         
-        if (actual_mask == 0) return FALSE;
+        if (info.mask == 0) return 0;
     }
     
-    // Visiting the hierarchy in "reverse depth-first" order
-    // is useful to avoid dealing with potential inconsistencies
-    // between the child mask and the actual existence of children.
     if (reverse) {
         visitor->node_count++;
-        if (is_leaf) visitor->leaf_count++;
+        if (info.is_leaf) visitor->leaf_count++;
         if (node_box->level > visitor->level_max) visitor->level_max = node_box->level;
         
         if (visitor->visit) {
-            visitor->mask = actual_mask;
-            visitor->is_leaf = is_leaf;
-            visitor->data_ref = data_ref;
-            visitor->node_box = *node_box;
-            if (!visitor->visit(visitor)) return TRUE;
+            info.node_box = *node_box;
+            visitor->visit(visitor, &info);
         }
     }
     
-    return TRUE;
+    return ((uint64_t)(info.mask) << (64-8)) | info.subtree_size;
 }
 
-void dmir_visit(DMirGeometry* geometry, DMirAddress node_ref, DMirVisitor* visitor, DMirBool reverse) {
+void dmir_visit(const DMirGeometry* geometry, DMirAddress node_ref, DMirVisitor* visitor, DMirBool reverse) {
     DMirTraversal src = {};
     
     if (geometry->evaluate == NULL) {
@@ -3103,10 +3117,8 @@ void dmir_visit(DMirGeometry* geometry, DMirAddress node_ref, DMirVisitor* visit
     visitor->level_max = 0;
     visitor->node_count = 0;
     visitor->leaf_count = 0;
-    visitor->node_box = node_box;
-    visitor->data_ref = src.data[0];
-    visitor->is_leaf = TRUE;
-    visitor->mask = 0;
+    visitor->node_ref_new = 0;
+    visitor->data_ref_new = 0;
     
-    dmir_visit_recursive(geometry, visitor, &src, 0, &node_box, reverse);
+    visit_recursive(geometry, visitor, &src, 0, &node_box, reverse);
 }
