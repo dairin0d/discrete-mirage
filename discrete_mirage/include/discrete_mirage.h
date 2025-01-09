@@ -161,12 +161,12 @@ typedef struct DMirQueue {
 // A map {1:0, 3:7, 6:2} would look like this:
 // 0000 1010 0000 0000 1111 0000 1000 0000
 typedef struct DMirLookups {
-    uint8_t* counts; // [mask] -> bit count
-    uint32_t* octants; // [mask] -> index to octant
-    uint32_t* indices; // [mask] -> octant to index
-    DMirQueue* sparse; // [(order << 8) | mask] -> octants & indices
-    DMirQueue* packed; // [(order << 8) | mask] -> octants & indices
-    uint8_t* flips; // [(flip << 8) | mask] -> flipped mask
+    uint8_t counts[256]; // [mask] -> bit count
+    uint32_t octants[256]; // [mask] -> index to octant
+    uint32_t indices[256]; // [mask] -> octant to index
+    DMirQueue sparse[6*8*256]; // [(order << 8) | mask] -> octants & indices
+    DMirQueue packed[6*8*256]; // [(order << 8) | mask] -> octants & indices
+    uint8_t flips[8*256]; // [(flip << 8) | mask] -> flipped mask
 } DMirLookups;
 
 // Holds information about the (sub)nodes at a given
@@ -430,7 +430,9 @@ int dmir_pixel_index(DMirFramebuffer* framebuffer, int x, int y) {
 // Most of the API functions below should be pretty
 // self-explanatory. Here's an overall idea of how
 // they are supposed to be used:
-// * Startup: make lookups, framebuffer(s), batcher(s), renderer(s)
+// * Startup:
+//   1. initialize lookups
+//   2. make framebuffer(s), batcher(s), renderer(s)
 // * Rendering a frame:
 //   1. dmir_framebuffer_clear(...)
 //   2. dmir_batcher_reset(...)
@@ -454,17 +456,16 @@ int dmir_pixel_index(DMirFramebuffer* framebuffer, int x, int y) {
 // to the cage's corner vertices. The "group" argument can be
 // useful if multiple geometries belong to one logical "object".
 
-// The lookup tables can take quite a bit of space (~1.5 MB),
-// so in this library they are generated at runtime.
-DMirLookups* dmir_lookups_make();
-void dmir_lookups_free(DMirLookups* lookups);
+extern DMirLookups dmir_lookups;
+
+void dmir_lookups_initialize(void);
 
 DMirFramebuffer* dmir_framebuffer_make(uint32_t size_x, uint32_t size_y);
 void dmir_framebuffer_free(DMirFramebuffer* framebuffer);
 void dmir_framebuffer_resize(DMirFramebuffer* framebuffer, uint32_t size_x, uint32_t size_y);
 void dmir_framebuffer_clear(DMirFramebuffer* framebuffer);
 
-DMirBatcher* dmir_batcher_make(DMirLookups* lookups);
+DMirBatcher* dmir_batcher_make();
 void dmir_batcher_free(DMirBatcher* batcher);
 void dmir_batcher_reset(DMirBatcher* batcher, DMirRect viewport, DMirFrustum frustum);
 void dmir_batcher_add(DMirBatcher* batcher, DMirFramebuffer* framebuffer,

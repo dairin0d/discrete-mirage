@@ -83,7 +83,6 @@ struct ProgramState {
     
     std::vector<RGBA32> render_buffer;
     
-    UPtr<DMirLookups> dmir_lookups;
     UPtr<DMirFramebuffer> dmir_framebuffer;
     UPtr<DMirBatcher> dmir_batcher;
     std::vector<UPtr<DMirRenderer>> dmir_renderers;
@@ -146,9 +145,7 @@ struct mat4 calculate_projection_matrix(ProgramState& state) {
 }
 
 void load_models(ProgramState& state, std::string model_path) {
-    auto lookups = state.dmir_lookups.get();
-    
-    auto model = load_octree(lookups, model_path);
+    auto model = load_octree(model_path);
     
     if (!model) {
         model = make_procedural_geometry(procedural_sampler, sizeof(ProceduralParameters));
@@ -221,11 +218,10 @@ void switch_dag_mode(ProgramState& state) {
     state.use_dag = !state.use_dag;
     
     if (state.use_dag && (state.dag_models.size() != state.models.size())) {
-        auto lookups = state.dmir_lookups.get();
         state.dag_models.clear();
         for (auto it = state.models.begin(); it != state.models.end(); ++it) {
             auto model = (*it).get();
-            auto dag_model = convert_to_dag(lookups, model->geometry, model->data, model->roots[0], true);
+            auto dag_model = convert_to_dag(model->geometry, model->data, model->roots[0], true);
             state.dag_models.push_back(std::move(dag_model));
         }
     }
@@ -832,7 +828,6 @@ int main(int argc, char* argv[]) {
         #ifndef RGFW_BUFFER
         .gl_texture = UPtr<GLuint>(nullptr, nullptr),
         #endif
-        .dmir_lookups = UPtr<DMirLookups>(nullptr, nullptr),
         .dmir_framebuffer = UPtr<DMirFramebuffer>(nullptr, nullptr),
         .dmir_batcher = UPtr<DMirBatcher>(nullptr, nullptr),
         .thread_case = 0,
@@ -881,16 +876,14 @@ int main(int argc, char* argv[]) {
         .perspective = 0,
     };
     
-    state.dmir_lookups = UPtr<DMirLookups>(
-        dmir_lookups_make(),
-        &dmir_lookups_free);
+    dmir_lookups_initialize();
     
     state.dmir_framebuffer = UPtr<DMirFramebuffer>(
         dmir_framebuffer_make(state.screen_width, state.screen_height),
         &dmir_framebuffer_free);
     
     state.dmir_batcher = UPtr<DMirBatcher>(
-        dmir_batcher_make(state.dmir_lookups.get()),
+        dmir_batcher_make(),
         &dmir_batcher_free);
     
     for (int i = 0; i < 16; i++) {

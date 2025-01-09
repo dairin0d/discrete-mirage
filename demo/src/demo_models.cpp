@@ -144,7 +144,7 @@ int32_t procedural_sampler(void* parameters, float* position, float radius, uint
     return (dist <= 0 ? 1 : -1);
 }
 
-UPtr<VoxelModel> load_octree(DMirLookups* lookups, std::string path, int mode = OCTREE_LOAD_PACKED) {
+UPtr<VoxelModel> load_octree(std::string path, int mode = OCTREE_LOAD_PACKED) {
     size_t file_size = 0;
     char* file_data = nullptr;
     read_file(path, file_size, &file_data);
@@ -180,7 +180,6 @@ UPtr<VoxelModel> load_octree(DMirLookups* lookups, std::string path, int mode = 
     octree->mask = ((uint8_t*)file_data) + 4;
     octree->addr_stride = 8;
     octree->mask_stride = 8;
-    octree->lookups = lookups;
     octree->geometry.traverse_start = octree_traverse_start;
     octree->geometry.traverse_next = octree_traverse_next;
     octree->geometry.evaluate = nullptr;
@@ -275,7 +274,7 @@ UPtr<VoxelModel> make_procedural_geometry(ProceduralSampler sampler, uint32_t pa
     return model;
 }
 
-UPtr<VoxelModel> convert_to_dag(DMirLookups* lookups, DMirGeometry* geometry,
+UPtr<VoxelModel> convert_to_dag(DMirGeometry* geometry,
     DMirVoxelData* voxel_data, DMirAddress root, bool compact)
 {
     auto model = UPtr<VoxelModel>(new VoxelModel(), delete_model);
@@ -311,7 +310,6 @@ UPtr<VoxelModel> convert_to_dag(DMirLookups* lookups, DMirGeometry* geometry,
     }
     
     auto dag = new DMirVoxelDAG();
-    dag->lookups = lookups;
     dag->geometry.traverse_start = dag_traverse_start;
     dag->geometry.traverse_next = dag_traverse_next;
     dag->geometry.evaluate = nullptr;

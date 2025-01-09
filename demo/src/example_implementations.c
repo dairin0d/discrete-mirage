@@ -109,7 +109,6 @@ int32_t procedural_evaluate(const void* geometry, DMirNodeBox* node_box, DMirAdd
 
 typedef struct DMirOctree {
     DMirGeometry geometry;
-    DMirLookups* lookups;
     uint32_t* addr;
     uint8_t* mask;
     uint32_t addr_stride; // in bytes
@@ -173,7 +172,6 @@ DMirBool octree_traverse_next(const void* geometry, DMirTraversal* src, int32_t 
 
 typedef struct DMirVoxelDAG {
     DMirGeometry geometry;
-    DMirLookups* lookups;
     uint8_t* nodes;
     uint32_t level_starts[DMIR_LEVEL_MAX];
     uint32_t level_count;

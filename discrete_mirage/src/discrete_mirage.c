@@ -4,6 +4,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <threads.h>
 
 #include "discrete_mirage.h"
 
@@ -354,11 +355,24 @@ UInt pow2_ceil(UInt value) {
 #define ZXY DMIR_ZXY
 #define ZYX DMIR_ZYX
 
-void lookups_make_octants_indices_counts(Lookups* lookups) {
-    lookups->counts = malloc(256 * sizeof(uint8_t));
-    lookups->octants = malloc(256 * sizeof(uint32_t));
-    lookups->indices = malloc(256 * sizeof(uint32_t));
-    
+// We could pre-compute the lookup tables and store
+// them directly in the library, but then its size
+// would significantly increase. By declaring the
+// tables without initialization, we take advantage
+// of BSS (Block Started by Symbol) mechanism, where
+// the memory is allocated on library load. It still
+// requires the user to initialize the tables as an
+// explicit step, but we get the benefits of global
+// access and don't need to free the memory manually.
+Lookups dmir_lookups;
+
+#define lookups dmir_lookups
+
+// For thread-safe one-time initialization
+static once_flag lookups_init_flag = ONCE_FLAG_INIT;
+
+void lookups_initialize(void) {
+    // counts, octants, indices
     for (SInt mask = 0; mask < 256; mask++) {
         uint8_t count = 0;
         uint32_t o2i = 0, i2o = 0;
@@ -369,17 +383,12 @@ void lookups_make_octants_indices_counts(Lookups* lookups) {
             i2o |= (octant | 0b1000) << (index*4);
             count++;
         }
-        lookups->counts[mask] = count;
-        lookups->indices[mask] = o2i;
-        lookups->octants[mask] = i2o;
+        lookups.counts[mask] = count;
+        lookups.indices[mask] = o2i;
+        lookups.octants[mask] = i2o;
     }
-}
-
-void lookups_make_queues(Lookups* lookups) {
-    const SInt queues_count = 6*8*256;
-    lookups->packed = malloc(queues_count * sizeof(Queue));
-    lookups->sparse = malloc(queues_count * sizeof(Queue));
     
+    // sparse and packed queues
     for (SInt order = 0; order < 6; order++) {
         SInt x_shift = 0, y_shift = 0, z_shift = 0;
         switch (order) {
@@ -393,7 +402,7 @@ void lookups_make_queues(Lookups* lookups) {
         
         for (SInt start_octant = 0; start_octant < 8; start_octant++) {
             for (SInt mask = 0; mask < 256; mask++) {
-                uint32_t o2i = lookups->indices[mask];
+                uint32_t o2i = lookups.indices[mask];
                 Queue queue = {.octants = 0, .indices = 0};
                 SInt shift = 0;
                 for (SInt z = 0; z <= 1; z++) {
@@ -409,51 +418,26 @@ void lookups_make_queues(Lookups* lookups) {
                         }
                     }
                 }
-                lookups->packed[(((order << 3) | start_octant) << 8) | mask] = queue;
+                lookups.packed[(((order << 3) | start_octant) << 8) | mask] = queue;
             }
         }
     }
     
+    const int queues_count = 6*8*256;
     for (SInt i = 0; i < queues_count; i++) {
-        lookups->sparse[i].octants = lookups->sparse[i].indices = lookups->packed[i].octants;
+        lookups.sparse[i].octants = lookups.sparse[i].indices = lookups.packed[i].octants;
     }
-}
-
-void lookups_make_flips(Lookups* lookups) {
-    lookups->flips = malloc(8*256 * sizeof(uint8_t));
     
+    // flips
     for (SInt flip = 0; flip < 8; flip++) {
         for (SInt maskBase = 0; maskBase < 256; maskBase++) {
             uint8_t mask = maskBase;
             if (flip & 0b001) mask = ((mask & 0b10101010) >> 1) | ((mask & 0b01010101) << 1);
             if (flip & 0b010) mask = ((mask & 0b11001100) >> 2) | ((mask & 0b00110011) << 2);
             if (flip & 0b100) mask = ((mask & 0b11110000) >> 4) | ((mask & 0b00001111) << 4);
-            lookups->flips[(flip << 8) | maskBase] = mask;
+            lookups.flips[(flip << 8) | maskBase] = mask;
         }
     }
-}
-
-Lookups* lookups_make() {
-    Lookups* lookups = malloc(sizeof(Lookups));
-    
-    if (lookups) {
-        lookups_make_octants_indices_counts(lookups);
-        lookups_make_queues(lookups);
-        lookups_make_flips(lookups);
-    }
-    
-    return lookups;
-}
-
-void lookups_free(Lookups* lookups) {
-    if (lookups->counts) free(lookups->counts);
-    if (lookups->octants) free(lookups->octants);
-    if (lookups->indices) free(lookups->indices);
-    if (lookups->sparse) free(lookups->sparse);
-    if (lookups->packed) free(lookups->packed);
-    if (lookups->flips) free(lookups->flips);
-    
-    free(lookups);
 }
 
 /////////////////////////////////////
@@ -472,7 +456,6 @@ typedef struct FramebufferInternal {
 
 typedef struct BatcherInternal {
     Batcher api;
-    Lookups* lookups;
     AffineInfo* affine;
     Subtree* subtrees;
     GridStackItem* stack;
@@ -1228,11 +1211,8 @@ typedef struct LocalVariables {
     FramebufferInternal* framebuffer;
     Fragment** fragments;
     Geometry* geometry;
-    Queue* queues;
     Queue* queues_forward;
     MapInfo* map;
-    uint32_t* octants;
-    uint32_t* indices;
     Stencil* local_stencil;
     Vector3S* deltas;
     AffineID affine_id;
@@ -1609,8 +1589,7 @@ static void initialize_local_stencil(FramebufferInternal* framebuffer,
 
 static void render_ortho_local_stencil(FramebufferInternal* framebuffer, Fragment** fragments,
     AffineID affine_id, Geometry* geometry, Effects* effects, Coord dilation,
-    Queue* queues, Queue* queues_forward, Queue* queues_reverse,
-    MapInfo* map, uint32_t* indices, uint32_t* octants,
+    Queue* queues_forward, MapInfo* map,
     OrthoStackItem* stack_start, Address node_ref, NodeBox node_box,
     Depth depth, Depth min_depth, Depth max_depth, Rect rect,
     SInt max_stack_level)
@@ -1645,11 +1624,8 @@ static void render_ortho_local_stencil(FramebufferInternal* framebuffer, Fragmen
         .framebuffer = framebuffer,
         .fragments = fragments,
         .geometry = geometry,
-        .queues = queues,
         .queues_forward = queues_forward,
         .map = map,
-        .octants = octants,
-        .indices = indices,
         .local_stencil = local_stencil,
         .max_level = effects->max_level,
         .affine_id = affine_id,
@@ -1838,9 +1814,7 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
     position.y = matrix[3].y;
     position.z = matrix[3].z;
     
-    Queue* queues = batcher->lookups->sparse;
-    Queue* queues_forward = queues + (((octant_order << 3) | (starting_octant ^ 0b000)) << 8);
-    Queue* queues_reverse = queues + (((octant_order << 3) | (starting_octant ^ 0b111)) << 8);
+    Queue* queues_forward = lookups.sparse + (((octant_order << 3) | (starting_octant ^ 0b000)) << 8);
     
     if (geometry->evaluate != NULL) {
         stack->traversal.mask[0] = 255;
@@ -1854,8 +1828,6 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
     
     SInt octant = 0;
     
-    uint32_t* indices = batcher->lookups->indices;
-    
     MapInfo map;
     if (max_stack_level > 0) {
         calculate_maps(&map, queues_forward, stack[1].deltas, extent, dilation, max_level);
@@ -1868,11 +1840,8 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
         .framebuffer = framebuffer,
         .fragments = fragments,
         .geometry = geometry,
-        .queues = queues,
         .queues_forward = queues_forward,
         .map = &map,
-        .octants = batcher->lookups->octants,
-        .indices = indices,
         .local_stencil = NULL,
         .max_level = effects.max_level,
         .affine_id = affine_id,
@@ -2013,8 +1982,7 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
             local_rect.max_y++;
             render_ortho_local_stencil(framebuffer, fragments,
                 affine_id, geometry, &effects, dilation,
-                queues, queues_forward, queues_reverse,
-                &map, indices, batcher->lookups->octants,
+                queues_forward, &map,
                 stack, v.node_ref, node_box,
                 depth, min_depth, max_depth, local_rect,
                 max_stack_level);
@@ -2028,12 +1996,8 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
 // Public API and some related functions //
 ///////////////////////////////////////////
 
-Lookups* dmir_lookups_make() {
-    return lookups_make();
-}
-
-void dmir_lookups_free(Lookups* lookups) {
-    lookups_free(lookups);
+void dmir_lookups_initialize(void) {
+    call_once(&lookups_init_flag, lookups_initialize);
 }
 
 Framebuffer* dmir_framebuffer_make(uint32_t size_x, uint32_t size_y) {
@@ -2167,12 +2131,10 @@ Bool dmir_is_occluded_quad(Framebuffer* framebuffer_ptr, Rect rect, Depth depth)
     return (Bool)is_occluded_quad(framebuffer, &rect, depth);
 }
 
-Batcher* dmir_batcher_make(Lookups* lookups) {
+Batcher* dmir_batcher_make() {
     BatcherInternal* batcher = malloc(sizeof(BatcherInternal));
     
     if (batcher) {
-        batcher->lookups = lookups;
-        
         batcher->affine_size = 1024;
         batcher->affine = malloc(batcher->affine_size * sizeof(AffineInfo));
         
@@ -2357,8 +2319,6 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer_ptr,
     
     NodeBox node_box = {.x = 0, .y = 0, .z = 0, .level = 0};
     
-    Queue* queues = batcher->lookups->sparse;
-    
     goto grid_initialized;
     
     do {
@@ -2513,7 +2473,7 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer_ptr,
             continue;
         }
         
-        Queue* queues_forward = queues + (((octant_order << 3) | (starting_octant)) << 8);
+        Queue* queues_forward = lookups.sparse + (((octant_order << 3) | (starting_octant)) << 8);
         stack->queue = queues_forward[mask].octants;
     } while (stack > stack_start);
 }
@@ -2801,8 +2761,6 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
     
     NodeBox node_box = subtree->node_box;
     
-    Queue* queues = batcher->lookups->sparse;
-    
     Fragment* fragments_start = renderer->fragments;
     // IMPORTANT: we need to update a local variable, not renderer->fragments!
     Fragment** fragments = &fragments_start;
@@ -2968,7 +2926,7 @@ void render_cage(RendererInternal* renderer, BatcherInternal* batcher,
             continue;
         }
         
-        Queue* queues_forward = queues + (((octant_order << 3) | (starting_octant)) << 8);
+        Queue* queues_forward = lookups.sparse + (((octant_order << 3) | (starting_octant)) << 8);
         stack->queue = queues_forward[mask].octants;
     } while (stack > stack_start);
     
