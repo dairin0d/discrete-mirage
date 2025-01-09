@@ -1723,9 +1723,6 @@ static void render_ortho_local_stencil(FramebufferInternal* framebuffer, Fragmen
         
         if (v.is_cube) {
             v.mask = 255;
-            
-            // Make sure we don't traverse beyond the initialized stack!
-            is_splat |= (stack->level == max_stack_level);
         } else {
             is_splat |= (stack->level == v.max_level);
             
@@ -1746,7 +1743,8 @@ static void render_ortho_local_stencil(FramebufferInternal* framebuffer, Fragmen
             }
         }
         
-        if (is_splat) {
+        // Whatever happens, don't traverse past max stack level
+        if (is_splat | (stack->level == max_stack_level)) {
             v.extent = stack->extent;
             v.data_ref = stack->traversal.data[octant];
             draw_splat(&v);
@@ -1948,9 +1946,6 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
         
         if (v.is_cube) {
             v.mask = 255;
-            
-            // Make sure we don't traverse beyond the initialized stack!
-            is_splat |= (stack->level == max_stack_level);
         } else {
             is_splat |= (stack->level == v.max_level);
             
@@ -1971,7 +1966,8 @@ void render_ortho(RendererInternal* renderer, BatcherInternal* batcher,
             }
         }
         
-        if (is_splat) {
+        // Whatever happens, don't traverse past max stack level
+        if (is_splat | (stack->level == max_stack_level)) {
             v.extent = stack->extent;
             v.data_ref = stack->traversal.data[octant];
             draw_splat(&v);
