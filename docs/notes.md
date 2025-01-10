@@ -127,3 +127,15 @@ Changes introduced in this version:
     * In the "local" case, occlusion test is much simpler, and we can skip the boundary checks
   * With 1D stencil tiles, using "local" mode is a bit faster than otherwise (~15% in my measurements), but 2D stencil tiles apparently add enough overhead to actually make "local" mode slower
   * In practice, "local" stencil buffer primarily speeds up the occlusion test, but the majority of rendering time is still dominated by processing small nodes that did not get occluded
+
+## Version "2.0.0"
+
+To support more than just basic octrees, I had to reorganize some of the APIs and internal workings.
+Now the library should (in principle) be able to render any octree-like hierarchical volume, if supplied with appropriate traversal callbacks. The performance of the general implementation is somewhat lower than the octree-only one, but it's arguably more useful from the utility perspective.
+
+In the demo, the following examples are implemented:
+* Basic octrees
+* Procedural volumes (via distance fields)
+* SSVDAGs (symmetry-aware sparse voxel directed acyclic graphs)
+
+Though please note that these examples are simply for demonstration purposes and do not actually correspond to any established file formats. Still, now that the algorithm is generalized, supporting additional variants (such as streaming/out-of-core octrees and compressed voxel data) should be at least feasible :-)
