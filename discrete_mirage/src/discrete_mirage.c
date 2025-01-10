@@ -4,7 +4,6 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <threads.h>
 
 #include "discrete_mirage.h"
 
@@ -369,9 +368,6 @@ UInt pow2_ceil(UInt value) {
 Lookups dmir_lookups;
 
 #define lookups dmir_lookups
-
-// For thread-safe one-time initialization
-static once_flag lookups_init_flag = ONCE_FLAG_INIT;
 
 void lookups_initialize(void) {
     // counts, octants, indices
@@ -1701,7 +1697,7 @@ Bool initialize_ortho(LocalVariables* v, OrthoStackItem* stack, ProjectedVertex*
 ///////////////////////////////////////////
 
 void dmir_lookups_initialize(void) {
-    call_once(&lookups_init_flag, lookups_initialize);
+    lookups_initialize();
 }
 
 Framebuffer* dmir_framebuffer_make(uint32_t size_x, uint32_t size_y) {
