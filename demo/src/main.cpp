@@ -152,15 +152,14 @@ void load_models(ProgramState& state, std::string model_path) {
         
         auto proc_geo = (ProceduralGeometry*)model->geometry;
         auto params = (ProceduralParameters*)proc_geo->parameters;
-        *params = (ProceduralParameters){
-            .animation_time = 0,
-            .animation_speed = 0.1f,
-            .terrain_detail = 4,
-            .terrain_height = 0.25f,
-            .sphere_radius = 0.25f,
-            .sphere_center = svec3(0.5f, 0.65f, 0.5f),
-        };
-        
+
+        params->animation_time = 0;
+        params->animation_speed = 0.1f;
+        params->terrain_detail = 4;
+        params->terrain_height = 0.25f;
+        params->sphere_radius = 0.25f;
+        params->sphere_center = svec3(0.5f, 0.65f, 0.5f);
+
         model->geometry->max_level = 8;
         
         state.max_level = 8;
@@ -911,11 +910,14 @@ int main(int argc, char* argv[]) {
     make_accum_weights(state.accum_weights_lin, state.accum_count, 1.0f, 1 << state.accum_shift);
     make_accum_weights(state.accum_weights_exp, state.accum_count, 0.65f, 1 << state.accum_shift);
     
-    if (argc <= 1) {
-        std::cerr << "Usage: " << argv[0] << " <file_path>" << std::endl;
+    std::string model_path;
+
+    if (argc <= 1)
+    {
+        model_path = "C:/Luke/Src/discrete-mirage/build/PortTown-raw-octree/PortTown.BreadthSorted.bytes";
     }
-    
-    std::string model_path = (argc > 1 ? argv[1] : "");
+    else 
+      model_path = (argc > 1 ? argv[1] : "");
     
     state.is_test_scene = (argc > 2) && (strcmp(argv[2], "TEST_SCENE") == 0);
     

@@ -196,7 +196,7 @@ DMirBool DAGBuilder::visit(DMirVisitor* visitor, DMirVisitorNodeInfo* node_info)
     }
     
     // 2nd level (grandparent of leaves) is the minimal addressable level in our DAG
-    uint32_t dagLevel = std::max(level - 2, 0);
+    uint32_t dagLevel = max(level - 2, 0);
     uint32_t levelTag = dagLevel << (32 - DMIR_LEVEL_BITS);
     uint32_t sortKey = levelTag | (UINT32_MAX >> DMIR_LEVEL_BITS);
     

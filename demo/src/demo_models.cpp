@@ -140,7 +140,7 @@ int32_t procedural_sampler(void* parameters, float* position, float radius, uint
     // return (dist_inside <= 0 ? 0 : 1);
     
     // "Volumetric" (traverse nodes which are fully inside the volume)
-    float dist = std::min(terrain_distance, sphere_distance);
+    float dist = min(terrain_distance, sphere_distance);
     return (dist <= 0 ? 1 : -1);
 }
 

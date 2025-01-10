@@ -356,6 +356,18 @@ UInt pow2_ceil(UInt value) {
 #define ZXY DMIR_ZXY
 #define ZYX DMIR_ZYX
 
+
+int dmir_row_size(DMirFramebuffer *framebuffer)
+{
+  return framebuffer->size_x;
+}
+
+
+int dmir_pixel_index(DMirFramebuffer *framebuffer, int x, int y)
+{
+  return x + (y * framebuffer->size_x);
+}
+
 // We could pre-compute the lookup tables and store
 // them directly in the library, but then its size
 // would significantly increase. By declaring the
@@ -2679,7 +2691,7 @@ static uint64_t visit_recursive(const DMirGeometry* geometry, DMirVisitor* visit
     info.subtree_size = 1;
     info.subnode_masks = 0;
     
-    DMirTraversal dst = {};
+    DMirTraversal dst;
     uint8_t mask = 255;
     
     if (geometry->evaluate != NULL) {
@@ -2766,7 +2778,7 @@ static uint64_t visit_recursive(const DMirGeometry* geometry, DMirVisitor* visit
 }
 
 void dmir_visit(const DMirGeometry* geometry, DMirAddress node_ref, DMirVisitor* visitor, DMirBool reverse) {
-    DMirTraversal src = {};
+    DMirTraversal src;
     
     if (geometry->evaluate == NULL) {
         src.node[0] = node_ref;

@@ -25,7 +25,7 @@ void octree_extract_voxel_data(DMirOctree* octree, DMirAddress root,
     if (size < 0) size = item_size;
     
     std::vector<uint8_t> data_item;
-    data_item.resize(std::max(item_size, offset+size));
+    data_item.resize(max(item_size, offset+size));
     auto data_item_ptr = data_item.data();
     auto subdata = data_item_ptr + offset;
     
@@ -85,7 +85,7 @@ void extract_voxel_data(DMirGeometry* geometry, DMirAddress root,
     if (size < 0) size = item_size;
     
     std::vector<uint8_t> data_item;
-    data_item.resize(std::max(item_size, offset+size));
+    data_item.resize(max(item_size, offset+size));
     
     struct VisitorState {
         DMirVoxelData* voxel_data;

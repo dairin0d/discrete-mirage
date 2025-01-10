@@ -1754,8 +1754,8 @@ u32 RGFW_window_checkFPS(RGFW_window* win, u32 fpsCap) {
 	u64 deltaTime = RGFW_getTimeNS() - win->event.frameTime;
 
 	u32 output_fps = 0;
-	u64 fps = round(1e+9 / deltaTime);
-	output_fps= fps;
+	u64 fps = (u64)round(1e+9 / deltaTime);
+	output_fps = (u32)fps;
 
 	if (fpsCap && fps > fpsCap) {
 		u64 frameTimeNS = 1e+9 / fpsCap;

@@ -417,12 +417,8 @@ int dmir_pixel_index(DMirFramebuffer* framebuffer, int x, int y) {
     return x + (y << framebuffer->row_shift);
 }
 #else
-int dmir_row_size(DMirFramebuffer* framebuffer) {
-    return framebuffer->size_x;
-}
-int dmir_pixel_index(DMirFramebuffer* framebuffer, int x, int y) {
-    return x + (y * framebuffer->size_x);
-}
+int dmir_row_size(DMirFramebuffer* framebuffer);
+int dmir_pixel_index(DMirFramebuffer* framebuffer, int x, int y);
 #endif
 
 // ===================================================== //

@@ -22,8 +22,8 @@ extern "C" {
 // contain valid node addresses everywhere
 #define DMIR_VALIDATE_ADDRESSES
 
-#define PTR_OFFSET(array, offset) ((typeof(array))(((char*)(array)) + (offset)))
-#define PTR_INDEX(array, index) PTR_OFFSET((array), ((index) * (array##_stride)))
+#define PTR_OFFSET(array, offset) ((decltype(array))(((char*)(array)) + (offset)))
+#define PTR_INDEX(array, index) PTR_OFFSET(array, ((index) * (array##_stride)))
 
 typedef struct DMirVoxelData {
     void (*get)(const void* data, DMirAddress data_ref, void* out);
