@@ -93,8 +93,6 @@ private:
     uint64_t m_voxelCount;
     uint64_t m_sizeInBytes;
     
-    std::vector<uint8_t> m_maskFlips;
-    
     // References to the root nodes (level, index, flip)
     std::vector<NodeRef> m_roots;
     
@@ -114,17 +112,6 @@ private:
 DAGBuilder::DAGBuilder()
     : m_knownNodes(1024, NodeRefHash(m_buffer), NodeRefEqual(m_buffer))
 {
-    m_maskFlips.reserve(8 * 256);
-    for (uint32_t flip = 0; flip < 8; flip++) {
-        for (uint32_t maskBase = 0; maskBase < 256; maskBase++) {
-            uint8_t mask = maskBase;
-            if (flip & 0b001) mask = ((mask & 0b10101010) >> 1) | ((mask & 0b01010101) << 1);
-            if (flip & 0b010) mask = ((mask & 0b11001100) >> 2) | ((mask & 0b00110011) << 2);
-            if (flip & 0b100) mask = ((mask & 0b11110000) >> 4) | ((mask & 0b00001111) << 4);
-            m_maskFlips[(flip << 8) | maskBase] = mask;
-        }
-    }
-    
     m_buffer.reserve(1024 * 1024);
     
     clear();
@@ -146,7 +133,7 @@ void DAGBuilder::clear() {
 }
 
 inline uint8_t DAGBuilder::flipMask(uint8_t mask, uint32_t flip) {
-    return m_maskFlips[(flip << 8) | mask];
+    return dmir_lookups.flips[(flip << 8) | mask];
 }
 
 uint32_t DAGBuilder::findCanonicalOrder(uint32_t* children, bool as_masks) {
