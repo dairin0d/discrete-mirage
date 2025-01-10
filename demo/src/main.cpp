@@ -218,12 +218,16 @@ void switch_dag_mode(ProgramState& state) {
     state.use_dag = !state.use_dag;
     
     if (state.use_dag && (state.dag_models.size() != state.models.size())) {
+        std::cout << "Converting to DAG..." << std::endl;
+        auto time_start = get_time_ms();
         state.dag_models.clear();
         for (auto it = state.models.begin(); it != state.models.end(); ++it) {
             auto model = (*it).get();
             auto dag_model = convert_to_dag(model->geometry, model->data, model->roots[0], true);
             state.dag_models.push_back(std::move(dag_model));
         }
+        auto time_end = get_time_ms();
+        std::cout << "Conversion took " << (time_end - time_start)/1000.0 << " s" << std::endl;
     }
 }
 
