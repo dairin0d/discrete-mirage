@@ -1218,7 +1218,6 @@ typedef struct LocalVariables {
     Queue* queues_forward;
     MapInfo map;
     Stencil* local_stencil;
-    Vector3S* deltas;
     AffineID affine_id;
     int32_t max_stack_level;
     int32_t max_level;
@@ -1230,15 +1229,12 @@ typedef struct LocalVariables {
     Vector3S position;
     Address node_ref;
     Address data_ref;
-    int32_t level;
     Rect rect;
     SInt size_max;
     Stencil row_mask;
-    Vector3S extent;
     uint8_t mask;
     uint8_t is_cube;
     NodeBox node_box;
-    Traversal* traversal;
     int32_t octant;
     uint32_t map_traversals_exist;
     Traversal map_traversals[9];
@@ -1291,9 +1287,9 @@ static inline void calc_circle_params(CircleParams* c,
     #endif
 }
 
-static void draw_circle(LocalVariables* v) {
+static void draw_circle(LocalVariables* v, OrthoStackItem* stack) {
     CircleParams c;
-    calc_circle_params(&c, &v->position, &v->extent, v->rect.min_x, v->rect.min_y);
+    calc_circle_params(&c, &v->position, &stack->extent, v->rect.min_x, v->rect.min_y);
     
     for (SInt y = v->rect.min_y; y <= v->rect.max_y; y++) {
         Coord distance_2 = c.distance_2_y, row_dx = c.start_dx;
@@ -1323,7 +1319,7 @@ static void draw_circle(LocalVariables* v) {
     }
 }
 
-static inline void draw_splat(LocalVariables* v) {
+static inline void draw_splat(LocalVariables* v, OrthoStackItem* stack) {
     if (v->size_max == 0) {
         STAT_INCREMENT(v->framebuffer, DMIR_SPLATS_1PX);
     } else {
@@ -1331,7 +1327,7 @@ static inline void draw_splat(LocalVariables* v) {
         
         if (v->shape == DMIR_SHAPE_CIRCLE) {
             RECT_CLIP(v->rect, v->clip_rect);
-            draw_circle(v);
+            draw_circle(v, stack);
             return;
         } else {
             if (v->shape == DMIR_SHAPE_POINT) {
@@ -1362,147 +1358,141 @@ static inline void draw_splat(LocalVariables* v) {
 }
 
 #ifdef USE_MAP
-static SInt draw_map(LocalVariables* v) {
+static void draw_map8(LocalVariables* v, OrthoStackItem* stack) {
     v->map_traversals_exist = 0;
     
-    if (v->size_max < v->map.size8) {
-        STAT_INCREMENT(v->framebuffer, DMIR_SPLATS_2PX);
-        
-        RECT_CLIP(v->rect, v->clip_rect);
-        
-        Coord min_mx = PIXEL_TO_COORD(v->rect.min_x) - (v->position.x - (v->map.half >> v->level));
-        Coord min_my = PIXEL_TO_COORD(v->rect.min_y) - (v->position.y - (v->map.half >> v->level));
-        SInt map_shift = v->map.shift - v->level;
-        
-        Coord mx, my;
-        SInt x, y;
-        for (my = min_my, y = v->rect.min_y; y <= v->rect.max_y; y++, my += SUBPIXEL_SIZE) {
-            uint8_t mask_y = v->map.y8[my >> map_shift] & v->mask;
-            for (mx = min_mx, x = v->rect.min_x; x <= v->rect.max_x; x++, mx += SUBPIXEL_SIZE) {
-                uint8_t mask_xy = v->map.x8[mx >> map_shift] & mask_y;
-                
-                if (mask_xy == 0) continue;
-                
-                if (v->local_stencil) {
-                    Stencil stencil_mask = ((Stencil)1) << x;
-                    if (!(v->local_stencil[y] & stencil_mask)) continue;
-                    v->local_stencil[y] &= ~stencil_mask;
-                }
-                
-                SInt abs_x = x + v->offset_x;
-                SInt abs_y = y + v->offset_y;
-                CHECK_AND_WRITE_STENCIL(v->framebuffer, abs_x, abs_y, continue);
-                
-                uint32_t octant = v->queues_forward[mask_xy].octants & 7;
-                Depth z = v->position.z + v->deltas[octant].z;
-                
-                if (!v->is_cube) {
-                    if (!v->map_traversals_exist) {
-                        if (!v->geometry->traverse_next(
-                            v->geometry, v->traversal, v->octant,
-                            &v->map_traversals[8])) continue;
-                        v->map_traversals_exist = TRUE;
-                    }
-                    v->data_ref = v->map_traversals[8].data[octant];
-                }
-                
-                SPLAT(v->framebuffer, v->fragments, abs_x, abs_y, z,
-                    v->affine_id, v->data_ref, continue);
+    STAT_INCREMENT(v->framebuffer, DMIR_SPLATS_2PX);
+    
+    RECT_CLIP(v->rect, v->clip_rect);
+    
+    Coord min_mx = PIXEL_TO_COORD(v->rect.min_x) - (v->position.x - (v->map.half >> stack->level));
+    Coord min_my = PIXEL_TO_COORD(v->rect.min_y) - (v->position.y - (v->map.half >> stack->level));
+    SInt map_shift = v->map.shift - stack->level;
+    
+    Coord mx, my;
+    SInt x, y;
+    for (my = min_my, y = v->rect.min_y; y <= v->rect.max_y; y++, my += SUBPIXEL_SIZE) {
+        uint8_t mask_y = v->map.y8[my >> map_shift] & v->mask;
+        for (mx = min_mx, x = v->rect.min_x; x <= v->rect.max_x; x++, mx += SUBPIXEL_SIZE) {
+            uint8_t mask_xy = v->map.x8[mx >> map_shift] & mask_y;
+            
+            if (mask_xy == 0) continue;
+            
+            if (v->local_stencil) {
+                Stencil stencil_mask = ((Stencil)1) << x;
+                if (!(v->local_stencil[y] & stencil_mask)) continue;
+                v->local_stencil[y] &= ~stencil_mask;
             }
+            
+            SInt abs_x = x + v->offset_x;
+            SInt abs_y = y + v->offset_y;
+            CHECK_AND_WRITE_STENCIL(v->framebuffer, abs_x, abs_y, continue);
+            
+            uint32_t octant = v->queues_forward[mask_xy].octants & 7;
+            Depth z = v->position.z + stack->deltas[octant].z;
+            
+            if (!v->is_cube) {
+                if (!v->map_traversals_exist) {
+                    if (!v->geometry->traverse_next(
+                        v->geometry, &stack->traversal, v->octant,
+                        &v->map_traversals[8])) continue;
+                    v->map_traversals_exist = TRUE;
+                }
+                v->data_ref = v->map_traversals[8].data[octant];
+            }
+            
+            SPLAT(v->framebuffer, v->fragments, abs_x, abs_y, z,
+                v->affine_id, v->data_ref, continue);
         }
-        
-        return TRUE;
+    }
+}
+
+static void draw_map64(LocalVariables* v, OrthoStackItem* stack) {
+    v->map_traversals_exist = 0;
+    
+    SInt use_suboctants = (v->size_max >= v->map.size36) & (stack->level != (v->max_level-1));
+    
+    if (use_suboctants) {
+        STAT_INCREMENT(v->framebuffer, DMIR_SPLATS_4PX);
+    } else {
+        STAT_INCREMENT(v->framebuffer, DMIR_SPLATS_3PX);
     }
     
-    if (v->size_max < v->map.size64) {
-        SInt use_suboctants = (v->size_max >= v->map.size36) & (v->level != (v->max_level-1));
+    RECT_CLIP(v->rect, v->clip_rect);
+    
+    Coord min_mx = PIXEL_TO_COORD(v->rect.min_x) - (v->position.x - (v->map.half >> stack->level));
+    Coord min_my = PIXEL_TO_COORD(v->rect.min_y) - (v->position.y - (v->map.half >> stack->level));
+    SInt map_shift = v->map.shift - stack->level;
+    
+    uint64_t mask64 = 0;
+    if (!v->is_cube) {
+        Queue queue = v->queues_forward[v->mask];
         
-        if (use_suboctants) {
-            STAT_INCREMENT(v->framebuffer, DMIR_SPLATS_4PX);
-        } else {
-            STAT_INCREMENT(v->framebuffer, DMIR_SPLATS_3PX);
+        if (!v->geometry->traverse_next(
+            v->geometry, &stack->traversal, v->octant,
+            &v->map_traversals[8])) return;
+        
+        for (; queue.octants != 0; queue.octants >>= 4) {
+            uint64_t mask8 = v->map_traversals[8].mask[queue.octants & 7];
+            mask64 |= (mask8 ? mask8 : 255) << ((queue.octants & 7) * 8);
         }
-        
-        RECT_CLIP(v->rect, v->clip_rect);
-        
-        Coord min_mx = PIXEL_TO_COORD(v->rect.min_x) - (v->position.x - (v->map.half >> v->level));
-        Coord min_my = PIXEL_TO_COORD(v->rect.min_y) - (v->position.y - (v->map.half >> v->level));
-        SInt map_shift = v->map.shift - v->level;
-        
-        uint64_t mask64 = 0;
-        if (!v->is_cube) {
-            Queue queue = v->queues_forward[v->mask];
+    } else {
+        mask64 = UINT64_MAX;
+    }
+    
+    Coord mx, my;
+    SInt x, y;
+    for (my = min_my, y = v->rect.min_y; y <= v->rect.max_y; y++, my += SUBPIXEL_SIZE) {
+        uint64_t mask_y = v->map.y64[my >> map_shift] & mask64;
+        for (mx = min_mx, x = v->rect.min_x; x <= v->rect.max_x; x++, mx += SUBPIXEL_SIZE) {
+            uint64_t mask_xy = v->map.x64[mx >> map_shift] & mask_y;
             
-            if (!v->geometry->traverse_next(
-                v->geometry, v->traversal, v->octant,
-                &v->map_traversals[8])) return TRUE;
+            if (mask_xy == 0) continue;
             
-            for (; queue.octants != 0; queue.octants >>= 4) {
-                uint64_t mask8 = v->map_traversals[8].mask[queue.octants & 7];
-                mask64 |= (mask8 ? mask8 : 255) << ((queue.octants & 7) * 8);
+            if (v->local_stencil) {
+                Stencil stencil_mask = ((Stencil)1) << x;
+                if (!(v->local_stencil[y] & stencil_mask)) continue;
+                v->local_stencil[y] &= ~stencil_mask;
             }
-        } else {
-            mask64 = UINT64_MAX;
-        }
-        
-        Coord mx, my;
-        SInt x, y;
-        for (my = min_my, y = v->rect.min_y; y <= v->rect.max_y; y++, my += SUBPIXEL_SIZE) {
-            uint64_t mask_y = v->map.y64[my >> map_shift] & mask64;
-            for (mx = min_mx, x = v->rect.min_x; x <= v->rect.max_x; x++, mx += SUBPIXEL_SIZE) {
-                uint64_t mask_xy = v->map.x64[mx >> map_shift] & mask_y;
+            
+            SInt abs_x = x + v->offset_x;
+            SInt abs_y = y + v->offset_y;
+            CHECK_AND_WRITE_STENCIL(v->framebuffer, abs_x, abs_y, continue);
+            
+            SInt bit2 = ((mask_xy & v->map.mask_bit2) == 0) & 1;
+            mask_xy &= v->map.mask_bit2 ^ (-(int64_t)bit2);
+            SInt bit1 = ((mask_xy & v->map.mask_bit1) == 0) & 1;
+            mask_xy &= v->map.mask_bit1 ^ (-(int64_t)bit1);
+            SInt bit0 = ((mask_xy & v->map.mask_bit0) == 0) & 1;
+            SInt queue_item = bit0 | (bit1 << 1) | (bit2 << 2);
+            SInt octant64 = (v->map.full_queue >> (queue_item << 2)) & 7;
+            
+            Depth z = v->position.z + stack->deltas[octant64].z;
+            
+            if (!v->is_cube) {
+                v->data_ref = v->map_traversals[8].data[octant64];
                 
-                if (mask_xy == 0) continue;
-                
-                if (v->local_stencil) {
-                    Stencil stencil_mask = ((Stencil)1) << x;
-                    if (!(v->local_stencil[y] & stencil_mask)) continue;
-                    v->local_stencil[y] &= ~stencil_mask;
-                }
-                
-                SInt abs_x = x + v->offset_x;
-                SInt abs_y = y + v->offset_y;
-                CHECK_AND_WRITE_STENCIL(v->framebuffer, abs_x, abs_y, continue);
-                
-                SInt bit2 = ((mask_xy & v->map.mask_bit2) == 0) & 1;
-                mask_xy &= v->map.mask_bit2 ^ (-(int64_t)bit2);
-                SInt bit1 = ((mask_xy & v->map.mask_bit1) == 0) & 1;
-                mask_xy &= v->map.mask_bit1 ^ (-(int64_t)bit1);
-                SInt bit0 = ((mask_xy & v->map.mask_bit0) == 0) & 1;
-                SInt queue_item = bit0 | (bit1 << 1) | (bit2 << 2);
-                SInt octant64 = (v->map.full_queue >> (queue_item << 2)) & 7;
-                
-                Depth z = v->position.z + v->deltas[octant64].z;
-                
-                if (!v->is_cube) {
-                    v->data_ref = v->map_traversals[8].data[octant64];
-                    
-                    if (use_suboctants) {
-                        uint8_t sub_mask_full = v->map_traversals[8].mask[octant64];
-                        if (sub_mask_full != 0) {
-                            if ((v->map_traversals_exist & (1 << octant64)) == 0) {
-                                if (!v->geometry->traverse_next(
-                                    v->geometry, &v->map_traversals[8], octant64,
-                                    &v->map_traversals[octant64])) continue;
-                                v->map_traversals_exist |= (1 << octant64);
-                            }
-                            uint8_t sub_mask = sub_mask_full & (mask_xy >> (octant64 * 8));
-                            uint32_t octant = v->queues_forward[sub_mask].octants & 7;
-                            z += DEPTH_HALVE(v->deltas[octant].z);
-                            v->data_ref = v->map_traversals[octant64].data[octant];
+                if (use_suboctants) {
+                    uint8_t sub_mask_full = v->map_traversals[8].mask[octant64];
+                    if (sub_mask_full != 0) {
+                        if ((v->map_traversals_exist & (1 << octant64)) == 0) {
+                            if (!v->geometry->traverse_next(
+                                v->geometry, &v->map_traversals[8], octant64,
+                                &v->map_traversals[octant64])) continue;
+                            v->map_traversals_exist |= (1 << octant64);
                         }
+                        uint8_t sub_mask = sub_mask_full & (mask_xy >> (octant64 * 8));
+                        uint32_t octant = v->queues_forward[sub_mask].octants & 7;
+                        z += DEPTH_HALVE(stack->deltas[octant].z);
+                        v->data_ref = v->map_traversals[octant64].data[octant];
                     }
                 }
-                
-                SPLAT(v->framebuffer, v->fragments, abs_x, abs_y, z,
-                    v->affine_id, v->data_ref, continue);
             }
+            
+            SPLAT(v->framebuffer, v->fragments, abs_x, abs_y, z,
+                v->affine_id, v->data_ref, continue);
         }
-        
-        return TRUE;
     }
-    
-    return FALSE;
 }
 #endif
 
@@ -1593,18 +1583,16 @@ static void initialize_local_stencil(FramebufferInternal* framebuffer,
     #endif
 }
 
-static void render_ortho_local_stencil(LocalVariables* v,
-    OrthoStackItem* stack_start,
-    Depth depth, Rect rect)
-{
-    OrthoStackItem* stack = stack_start;
-    stack_start--;
+static void initialize_ortho_local(LocalVariables* v, OrthoStackItem* stack) {
+    Coord extent_x = (stack-1)->extent.x + SUBPIXEL_SIZE;
+    Coord extent_y = (stack-1)->extent.y + SUBPIXEL_SIZE;
+    Depth depth = v->position.z - (stack-1)->extent.z;
     
-    Stencil local_stencil[STENCIL_LOCAL_SIZE];
+    Rect local_rect;
+    RECT_FROM_POINT(local_rect, v->position, extent_x, extent_y);
     
-    v->local_stencil = local_stencil;
-    v->offset_x = rect.min_x;
-    v->offset_y = rect.min_y;
+    v->offset_x = local_rect.min_x;
+    v->offset_y = local_rect.min_y;
     
     v->clip_rect = (Rect){
         .min_x = stack->rect.min_x - v->offset_x,
@@ -1613,7 +1601,7 @@ static void render_ortho_local_stencil(LocalVariables* v,
         .max_y = stack->rect.max_y - v->offset_y,
     };
     
-    initialize_local_stencil(v->framebuffer, stack, local_stencil, &rect, depth);
+    initialize_local_stencil(v->framebuffer, stack, v->local_stencil, &local_rect, depth);
     
     stack->center.x -= SUBPIXEL_SIZE * v->offset_x;
     stack->center.y -= SUBPIXEL_SIZE * v->offset_y;
@@ -1621,124 +1609,6 @@ static void render_ortho_local_stencil(LocalVariables* v,
     stack->rect.min_y -= v->offset_y;
     stack->rect.max_x -= v->offset_x;
     stack->rect.max_y -= v->offset_y;
-    
-    v->octant = 0;
-    
-    do {
-        {
-            if (stack->queue == 0) {
-                stack--;
-                continue;
-            }
-            v->octant = stack->queue & 7;
-            stack->queue >>= 4;
-            v->node_ref = stack->traversal.node[v->octant];
-            
-            v->position.x = stack->center.x + stack->deltas[v->octant].x;
-            v->position.y = stack->center.y + stack->deltas[v->octant].y;
-            v->position.z = stack->center.z + stack->deltas[v->octant].z;
-            
-            node_box_child(&stack->node_box, v->octant, &v->node_box);
-        }
-        
-        grid_initialized:;
-        
-        STAT_INCREMENT(v->framebuffer, DMIR_NODES_ORTHO);
-        
-        if ((v->position.z >= stack->max_z) | (v->position.z <= stack->min_z)) continue;
-        
-        // Calculate screen-space bounds (in pixels)
-        RECT_FROM_POINT(v->rect, v->position, stack->extent.x, stack->extent.y);
-        
-        // Calculate node size (in pixels)
-        SInt size_x = v->rect.max_x - v->rect.min_x;
-        SInt size_y = v->rect.max_y - v->rect.min_y;
-        v->size_max = MAX(size_x, size_y);
-        
-        // if (v->rect.min_x > v->rect.max_x) continue;
-        
-        // Empirically, this seems to offer no performance benefit
-        // #ifdef DMIR_SKIP_OCCLUDED_ROWS
-        // MAX_UPDATE(v->rect.min_y, stack->rect.min_y);
-        // #endif
-        
-        v->row_mask = (STENCIL_CLEAR << v->rect.min_x) ^ ((STENCIL_CLEAR << 1) << v->rect.max_x);
-        // if (v->row_mask == 0) continue;
-        
-        for (; v->rect.min_y <= v->rect.max_y; v->rect.min_y++) {
-            if (v->local_stencil[v->rect.min_y] & v->row_mask) goto not_occluded;
-        }
-        STAT_INCREMENT(v->framebuffer, DMIR_OCCLUSIONS_FAILED);
-        continue;
-        not_occluded:;
-        STAT_INCREMENT(v->framebuffer, DMIR_OCCLUSIONS_PASSED);
-        
-        v->is_cube = stack->is_cube;
-        
-        SInt is_splat = (v->size_max == 0);
-        
-        v->mask = 0;
-        
-        if (v->is_cube) {
-            v->mask = 255;
-        } else {
-            is_splat |= (stack->level == v->max_level);
-            
-            if (v->geometry->evaluate != NULL) {
-                int32_t eval_result = v->geometry->evaluate(v->geometry, &v->node_box, &stack->traversal.data[v->octant]);
-                if (eval_result < 0) continue;
-                is_splat |= (eval_result == 0);
-                v->mask = 255;
-            } else if (!is_splat) {
-                v->mask = stack->traversal.mask[v->octant];
-                is_splat = !v->mask;
-            }
-            
-            if (is_splat & (v->shape == DMIR_SHAPE_CUBE)) {
-                v->mask = 255;
-                v->is_cube = TRUE;
-                is_splat = FALSE;
-            }
-        }
-        
-        // Whatever happens, don't traverse past max stack level
-        if (is_splat | (stack->level == v->max_stack_level)) {
-            v->extent = stack->extent;
-            v->data_ref = stack->traversal.data[v->octant];
-            draw_splat(v);
-            continue;
-        }
-        
-        #ifdef USE_MAP
-        if ((v->size_max < 4) & (v->geometry->evaluate == NULL)) {
-            v->deltas = stack->deltas;
-            v->level = stack->level;
-            v->data_ref = stack->traversal.data[v->octant];
-            v->traversal = &stack->traversal;
-            if (draw_map(v)) continue;
-        }
-        #endif
-        
-        stack++;
-        stack->rect = v->rect;
-        stack->node_box = v->node_box;
-        stack->center = v->position;
-        stack->is_cube = v->is_cube;
-        
-        if (v->is_cube | (v->geometry->evaluate != NULL)) {
-            v->data_ref = (stack-1)->traversal.data[v->octant];
-            for (SInt i = 0; i < 8; i++) {
-                stack->traversal.mask[i] = 255;
-                stack->traversal.node[i] = v->node_ref;
-                stack->traversal.data[i] = v->data_ref;
-            }
-        } else if (!v->geometry->traverse_next(v->geometry, &(stack-1)->traversal, v->octant, &stack->traversal)) {
-            stack--;
-            continue;
-        }
-        
-        stack->queue = v->queues_forward[v->mask].octants;
-    } while (stack > stack_start);
 }
 #endif
 
@@ -1789,13 +1659,6 @@ Bool initialize_ortho(LocalVariables* v, OrthoStackItem* stack, ProjectedVertex*
     
     v->position = (Vector3S){.x = matrix[3].x, .y = matrix[3].y, .z = matrix[3].z};
     
-    return TRUE;
-}
-
-void render_ortho(LocalVariables* v, OrthoStackItem* stack, ProjectedVertex* grid, Effects* effects) {
-    OrthoStackItem* stack_start = stack;
-    if (!initialize_ortho(v, stack, grid, effects)) return;
-    
     stack->rect = v->renderer->api.rect;
     
     stack->is_cube = v->is_cube;
@@ -1805,7 +1668,7 @@ void render_ortho(LocalVariables* v, OrthoStackItem* stack, ProjectedVertex* gri
         stack->traversal.node[0] = v->node_ref;
         stack->traversal.data[0] = v->data_ref;
     } else {
-        if (!v->geometry->traverse_start(v->geometry, v->node_ref, v->data_ref, &stack->traversal)) return;
+        if (!v->geometry->traverse_start(v->geometry, v->node_ref, v->data_ref, &stack->traversal)) return FALSE;
     }
     
     stack->queue = 0;
@@ -1813,31 +1676,37 @@ void render_ortho(LocalVariables* v, OrthoStackItem* stack, ProjectedVertex* gri
     v->local_stencil = NULL;
     v->offset_x = 0;
     v->offset_y = 0;
-    
     v->clip_rect = stack->rect;
     
-    v->octant = 0;
+    return TRUE;
+}
+
+static void render_ortho_loop(LocalVariables* v, OrthoStackItem* stack,
+    Stencil* local_stencil, Bool is_initialized, Bool is_local)
+{
+    OrthoStackItem* stack_start = stack;
     
-    goto grid_initialized;
+    if (is_initialized) {
+        stack_start--;
+    } else {
+        v->octant = 0;
+        goto skip_initialization;
+    }
     
     do {
-        {
-            if (stack->queue == 0) {
-                stack--;
-                continue;
-            }
-            v->octant = stack->queue & 7;
-            stack->queue >>= 4;
-            v->node_ref = stack->traversal.node[v->octant];
-            
-            v->position.x = stack->center.x + stack->deltas[v->octant].x;
-            v->position.y = stack->center.y + stack->deltas[v->octant].y;
-            v->position.z = stack->center.z + stack->deltas[v->octant].z;
-            
-            node_box_child(&stack->node_box, v->octant, &v->node_box);
+        if (stack->queue == 0) {
+            stack--;
+            continue;
         }
+        v->octant = stack->queue & 7;
+        stack->queue >>= 4;
+        v->node_ref = stack->traversal.node[v->octant];
+        v->position.x = stack->center.x + stack->deltas[v->octant].x;
+        v->position.y = stack->center.y + stack->deltas[v->octant].y;
+        v->position.z = stack->center.z + stack->deltas[v->octant].z;
+        node_box_child(&stack->node_box, v->octant, &v->node_box);
         
-        grid_initialized:;
+        skip_initialization:;
         
         STAT_INCREMENT(v->framebuffer, DMIR_NODES_ORTHO);
         
@@ -1851,13 +1720,38 @@ void render_ortho(LocalVariables* v, OrthoStackItem* stack, ProjectedVertex* gri
         SInt size_y = v->rect.max_y - v->rect.min_y;
         v->size_max = MAX(size_x, size_y);
         
-        // Clamp to viewport
-        RECT_CLIP(v->rect, stack->rect);
-        
-        // Skip if not visible
-        if ((v->rect.min_x > v->rect.max_x) | (v->rect.min_y > v->rect.max_y)) continue;
-        
-        if (is_occluded_quad(v->framebuffer, &v->rect, v->position.z - stack->extent.z)) continue;
+        #ifdef STENCIL_LOCAL_SIZE
+        if (is_local)
+        {
+            // if (v->rect.min_x > v->rect.max_x) continue;
+            
+            // Empirically, this seems to offer no performance benefit
+            // #ifdef DMIR_SKIP_OCCLUDED_ROWS
+            // MAX_UPDATE(v->rect.min_y, stack->rect.min_y);
+            // #endif
+            
+            v->row_mask = (STENCIL_CLEAR << v->rect.min_x) ^ ((STENCIL_CLEAR << 1) << v->rect.max_x);
+            // if (v->row_mask == 0) continue;
+            
+            for (; v->rect.min_y <= v->rect.max_y; v->rect.min_y++) {
+                if (v->local_stencil[v->rect.min_y] & v->row_mask) goto not_occluded;
+            }
+            STAT_INCREMENT(v->framebuffer, DMIR_OCCLUSIONS_FAILED);
+            continue;
+            not_occluded:;
+            STAT_INCREMENT(v->framebuffer, DMIR_OCCLUSIONS_PASSED);
+        }
+        else
+        #endif
+        {
+            // Clamp to viewport
+            RECT_CLIP(v->rect, stack->rect);
+            
+            // Skip if not visible
+            if ((v->rect.min_x > v->rect.max_x) | (v->rect.min_y > v->rect.max_y)) continue;
+            
+            if (is_occluded_quad(v->framebuffer, &v->rect, v->position.z - stack->extent.z)) continue;
+        }
         
         v->is_cube = stack->is_cube;
         
@@ -1889,19 +1783,23 @@ void render_ortho(LocalVariables* v, OrthoStackItem* stack, ProjectedVertex* gri
         
         // Whatever happens, don't traverse past max stack level
         if (is_splat | (stack->level == v->max_stack_level)) {
-            v->extent = stack->extent;
             v->data_ref = stack->traversal.data[v->octant];
-            draw_splat(v);
+            draw_splat(v, stack);
             continue;
         }
         
         #ifdef USE_MAP
-        if ((v->size_max < 4) & (v->geometry->evaluate == NULL)) {
-            v->deltas = stack->deltas;
-            v->level = stack->level;
-            v->data_ref = stack->traversal.data[v->octant];
-            v->traversal = &stack->traversal;
-            if (draw_map(v)) continue;
+        if (v->geometry->evaluate == NULL) {
+            if (v->size_max < v->map.size8) {
+                v->data_ref = stack->traversal.data[v->octant];
+                draw_map8(v, stack);
+                continue;
+            }
+            if (v->size_max < v->map.size64) {
+                v->data_ref = stack->traversal.data[v->octant];
+                draw_map64(v, stack);
+                continue;
+            }
         }
         #endif
         
@@ -1926,21 +1824,16 @@ void render_ortho(LocalVariables* v, OrthoStackItem* stack, ProjectedVertex* gri
         stack->queue = v->queues_forward[v->mask].octants;
         
         #ifdef STENCIL_LOCAL_SIZE
-        if (v->size_max < (STENCIL_LOCAL_SIZE - 2)) {
-            Coord extent_x = (stack-1)->extent.x + SUBPIXEL_SIZE;
-            Coord extent_y = (stack-1)->extent.y + SUBPIXEL_SIZE;
-            Depth depth = v->position.z - (stack-1)->extent.z;
+        if ((!is_local) && (v->size_max < (STENCIL_LOCAL_SIZE - 2))) {
+            v->local_stencil = local_stencil;
+            initialize_ortho_local(v, stack);
             
-            Rect local_rect;
-            RECT_FROM_POINT(local_rect, v->position, extent_x, extent_y);
-            
-            render_ortho_local_stencil(v,
-                stack,
-                depth, local_rect);
+            render_ortho_loop(v, stack, local_stencil, TRUE, TRUE);
             
             v->local_stencil = NULL;
             v->offset_x = 0;
             v->offset_y = 0;
+            v->clip_rect = stack_start->rect;
             
             stack--;
         }
@@ -2275,26 +2168,22 @@ void dmir_batcher_add(Batcher* batcher_ptr, Framebuffer* framebuffer_ptr,
     
     NodeBox node_box = {.x = 0, .y = 0, .z = 0, .level = 0};
     
-    goto grid_initialized;
+    goto skip_initialization;
     
     do {
-        {
-            if (stack->queue == 0) {
-                stack--;
-                continue;
-            }
-            octant = stack->queue & 7;
-            stack->queue >>= 4;
-            mask = stack->traversal.mask[octant];
-            node_ref = stack->traversal.node[octant];
-            node_box_child(&stack->node_box, octant, &node_box);
-            initialize_subgrid(stack->grid, (stack-1)->grid, octant);
+        if (stack->queue == 0) {
+            stack--;
+            continue;
         }
-        
-        // Find the min/max of the corner vertices
+        octant = stack->queue & 7;
+        stack->queue >>= 4;
+        mask = stack->traversal.mask[octant];
+        node_ref = stack->traversal.node[octant];
+        node_box_child(&stack->node_box, octant, &node_box);
+        initialize_subgrid(stack->grid, (stack-1)->grid, octant);
         calculate_screen_bounds(stack->grid, &bounds, &max_scale);
         
-        grid_initialized:;
+        skip_initialization:;
         
         STAT_INCREMENT(framebuffer, DMIR_NODES_BATCHED);
         
@@ -2720,26 +2609,28 @@ void render_cage(LocalVariables* v, Subtree* subtree) {
     
     v->fragments = v->renderer->fragments;
     
-    goto grid_initialized;
+    #ifdef STENCIL_LOCAL_SIZE
+    Stencil local_stencil[STENCIL_LOCAL_SIZE];
+    #else
+    Stencil* local_stencil = NULL;
+    #endif
+    
+    goto skip_initialization;
     
     do {
-        {
-            if (stack->queue == 0) {
-                stack--;
-                continue;
-            }
-            v->octant = stack->queue & 7;
-            stack->queue >>= 4;
-            v->mask = stack->traversal.mask[v->octant];
-            v->node_ref = stack->traversal.node[v->octant];
-            node_box_child(&stack->node_box, v->octant, &v->node_box);
-            initialize_subgrid(stack->grid, (stack-1)->grid, v->octant);
+        if (stack->queue == 0) {
+            stack--;
+            continue;
         }
-        
-        // Find the min/max of the corner vertices
+        v->octant = stack->queue & 7;
+        stack->queue >>= 4;
+        v->mask = stack->traversal.mask[v->octant];
+        v->node_ref = stack->traversal.node[v->octant];
+        node_box_child(&stack->node_box, v->octant, &v->node_box);
+        initialize_subgrid(stack->grid, (stack-1)->grid, v->octant);
         calculate_screen_bounds(stack->grid, &bounds, &max_scale);
         
-        grid_initialized:;
+        skip_initialization:;
         
         STAT_INCREMENT(v->framebuffer, DMIR_NODES_CAGE);
         
@@ -2845,7 +2736,11 @@ void render_cage(LocalVariables* v, Subtree* subtree) {
             
             v->data_ref = stack->traversal.data[v->octant];
             
-            render_ortho(v, (OrthoStackItem*)(stack+1), stack->grid, &sub_effects);
+            OrthoStackItem* ortho_stack = (OrthoStackItem*)(stack+1);
+            if (initialize_ortho(v, ortho_stack, stack->grid, &sub_effects)) {
+                render_ortho_loop(v, ortho_stack, local_stencil, FALSE, FALSE);
+            }
+            
             continue;
         }
         
