@@ -5,6 +5,9 @@
   * [Architecture](#architecture)
   * [Observations](#observations)
 * [Version "proto-1.1.1"](#version-proto-111)
+* [Version "proto-1.1.2"](#version-proto-112)
+* [Version "1.2.0"](#version-120)
+* [Version "2.0.0"](#version-200)
 
 ## Version "proto-1.0.0"
 
