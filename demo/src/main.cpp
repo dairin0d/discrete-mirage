@@ -152,14 +152,12 @@ void load_models(ProgramState& state, std::string model_path) {
         
         auto proc_geo = (ProceduralGeometry*)model->geometry;
         auto params = (ProceduralParameters*)proc_geo->parameters;
-        *params = (ProceduralParameters){
-            .animation_time = 0,
-            .animation_speed = 0.1f,
-            .terrain_detail = 4,
-            .terrain_height = 0.25f,
-            .sphere_radius = 0.25f,
-            .sphere_center = svec3(0.5f, 0.65f, 0.5f),
-        };
+        params->animation_time = 0;
+        params->animation_speed = 0.1f;
+        params->terrain_detail = 4;
+        params->terrain_height = 0.25f;
+        params->sphere_radius = 0.25f;
+        params->sphere_center = svec3(0.5f, 0.65f, 0.5f);
         
         model->geometry->max_level = 8;
         
