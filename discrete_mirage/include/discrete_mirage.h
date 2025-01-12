@@ -409,24 +409,6 @@ const struct DMirFrustum DMIR_FRUSTUM_DEFAULT = {
 
 // ===================================================== //
 
-#ifdef DMIR_ROW_POW2
-int dmir_row_size(DMirFramebuffer* framebuffer) {
-    return 1 << framebuffer->row_shift;
-}
-int dmir_pixel_index(DMirFramebuffer* framebuffer, int x, int y) {
-    return x + (y << framebuffer->row_shift);
-}
-#else
-int dmir_row_size(DMirFramebuffer* framebuffer) {
-    return framebuffer->size_x;
-}
-int dmir_pixel_index(DMirFramebuffer* framebuffer, int x, int y) {
-    return x + (y * framebuffer->size_x);
-}
-#endif
-
-// ===================================================== //
-
 // Most of the API functions below should be pretty
 // self-explanatory. Here's an overall idea of how
 // they are supposed to be used:
@@ -480,6 +462,9 @@ void dmir_renderer_draw(DMirRenderer* renderer);
 // ===================================================== //
 
 // Also, some utility functions:
+
+int32_t dmir_row_size(DMirFramebuffer* framebuffer);
+int32_t dmir_pixel_index(DMirFramebuffer* framebuffer, int32_t x, int32_t y);
 
 // Converts a view-space z coordinate to Depth value
 DMirDepth dmir_z_to_depth(DMirBatcher* batcher, float z);

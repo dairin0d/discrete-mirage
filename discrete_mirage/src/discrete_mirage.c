@@ -1696,6 +1696,22 @@ Bool initialize_ortho(LocalVariables* v, OrthoStackItem* stack, ProjectedVertex*
 // Public API and some related functions //
 ///////////////////////////////////////////
 
+#ifdef DMIR_ROW_POW2
+int32_t dmir_row_size(DMirFramebuffer* framebuffer) {
+    return 1 << framebuffer->row_shift;
+}
+int32_t dmir_pixel_index(DMirFramebuffer* framebuffer, int32_t x, int32_t y) {
+    return x + (y << framebuffer->row_shift);
+}
+#else
+int32_t dmir_row_size(DMirFramebuffer* framebuffer) {
+    return framebuffer->size_x;
+}
+int32_t dmir_pixel_index(DMirFramebuffer* framebuffer, int32_t x, int32_t y) {
+    return x + (y * framebuffer->size_x);
+}
+#endif
+
 void dmir_lookups_initialize(void) {
     lookups_initialize();
 }
