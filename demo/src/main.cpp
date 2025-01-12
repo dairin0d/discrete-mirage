@@ -915,7 +915,7 @@ int main(int argc, char* argv[]) {
     make_accum_weights(state.accum_weights_exp, state.accum_count, 0.65f, 1 << state.accum_shift);
     
     if (argc <= 1) {
-        std::cerr << "Usage: " << argv[0] << " <file_path>" << std::endl;
+        std::cout << "Usage: " << argv[0] << " <file_path>" << std::endl;
     }
     
     std::string model_path = (argc > 1 ? argv[1] : "");
