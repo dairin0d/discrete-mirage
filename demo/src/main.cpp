@@ -30,6 +30,11 @@
 #include <fstream>
 #include <thread>
 
+// Under MSVC, <windows.h> defines "min" and "max"
+// macros (which conflict with std::min/std::max),
+// unless NOMINMAX 1 is defined
+#define NOMINMAX 1
+
 #define RGFW_BUFFER
 #define RGFW_IMPLEMENTATION
 #include <RGFW.h>

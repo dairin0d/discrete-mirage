@@ -22,6 +22,11 @@
 *
 */
 
+/* 
+* Local Modifications:
+* - 2025-01-12: attempt to fix an MSVC-related compilation issue in RGFW_window_checkFPS.
+*/
+
 /*
 	(MAKE SURE RGFW_IMPLEMENTATION is in exactly one header or you use -D RGFW_IMPLEMENTATION)
 	#define RGFW_IMPLEMENTATION - makes it so source code is included with header
@@ -1754,8 +1759,8 @@ u32 RGFW_window_checkFPS(RGFW_window* win, u32 fpsCap) {
 	u64 deltaTime = RGFW_getTimeNS() - win->event.frameTime;
 
 	u32 output_fps = 0;
-	u64 fps = round(1e+9 / deltaTime);
-	output_fps= fps;
+	u64 fps = (u64)round(1e+9 / deltaTime);
+	output_fps= (u32)fps;
 
 	if (fpsCap && fps > fpsCap) {
 		u64 frameTimeNS = 1e+9 / fpsCap;
@@ -1773,7 +1778,7 @@ u32 RGFW_window_checkFPS(RGFW_window* win, u32 fpsCap) {
 		return (u32) output_fps;
 	
 	deltaTime = RGFW_getTimeNS() - win->event.frameTime2;
-	output_fps = round(1e+9 / deltaTime);
+	output_fps = (u64)round(1e+9 / deltaTime);
 	win->event.frameTime2 = RGFW_getTimeNS();
 
 	return output_fps;
